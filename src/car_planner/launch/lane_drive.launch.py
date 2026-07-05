@@ -11,6 +11,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -19,11 +20,16 @@ def generate_launch_description():
     )
 
     use_control = LaunchConfiguration('use_control')
+    show_gui = LaunchConfiguration('show_gui')
 
     return LaunchDescription([
         DeclareLaunchArgument(
             'use_control', default_value='true',
             description='하드웨어 구동 노드 실행 여부 (개발 PC 에서는 false)',
+        ),
+        DeclareLaunchArgument(
+            'show_gui', default_value='false',
+            description='차선 인식 imshow + HSV 트랙바 표시 (모니터/VNC 필요)',
         ),
 
         Node(
@@ -38,7 +44,10 @@ def generate_launch_description():
             executable='lane_detection_node',
             name='lane_detection_node',
             output='screen',
-            parameters=[params_file],
+            parameters=[
+                params_file,
+                {'show_gui': ParameterValue(show_gui, value_type=bool)},
+            ],
         ),
         Node(
             package='car_planner',

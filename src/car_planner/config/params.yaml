@@ -4,7 +4,7 @@ camera_node:
   ros__parameters:
     publish_topic: /camera/image/compressed
     camera_type: usb          # 'usb' | 'csi' (JetRacer CSI 카메라면 csi)
-    camera_device: /dev/video0
+    camera_device: /dev/video1  # C920 웹캠 (video0은 Telechips 내장 videoinput0)
     image_width: 640
     image_height: 480
     publish_hz: 30.0
@@ -67,7 +67,7 @@ control_node:
     control_topic: /control
     command_hz: 30.0
     command_timeout: 0.5
-    i2c_bus: 1                # JetRacer(Jetson)=1, TOPST D3-G=3
+    i2c_bus: 3                # JetRacer(Jetson)=1, TOPST D3-G=3 (0x40 스캔 확인)
     pca9685_addr: 0x40
     steering_channel: 0
     throttle_channel: 1

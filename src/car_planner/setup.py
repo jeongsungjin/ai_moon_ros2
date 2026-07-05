@@ -24,6 +24,7 @@ setup(
     entry_points={
         'console_scripts': [
             'main_planner_node = car_planner.main_planner_node:main',
+            'web_viewer_node = car_planner.web_viewer_node:main',
         ],
     },
 )
