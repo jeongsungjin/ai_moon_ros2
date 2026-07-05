@@ -1,0 +1,76 @@
+# AI_moon ROS2 통합 파라미터 (트랙에서 튜닝하는 값 모음)
+
+camera_node:
+  ros__parameters:
+    publish_topic: /camera/image/compressed
+    camera_type: usb          # 'usb' | 'csi' (JetRacer CSI 카메라면 csi)
+    camera_device: /dev/video0
+    image_width: 640
+    image_height: 480
+    publish_hz: 30.0
+    flip_180: false
+    jpeg_quality: 90
+
+lane_detection_node:
+  ros__parameters:
+    image_topic: /camera/image/compressed
+    process_hz: 30.0
+    version: safe             # 'safe' | 'fast'
+    speed_safe: 0.45
+    speed_fast: 0.5
+    speed_red_zone: 0.2
+    use_pid: false
+    publish_debug_image: true
+    show_gui: false           # 모니터/VNC 연결 시 true → imshow + HSV 트랙바
+    # HSV 튜닝값 (조명 환경에 맞게 트랙에서 조정)
+    hsv_yellow_lower: [10, 108, 125]
+    hsv_yellow_upper: [35, 255, 255]
+    hsv_left_yellow_lower: [15, 80, 90]
+    hsv_left_yellow_upper: [30, 255, 235]
+    hsv_white_lower: [30, 0, 151]
+    hsv_white_upper: [122, 67, 207]
+    hsv_red_lower: [145, 35, 35]
+    hsv_red_upper: [179, 255, 255]
+    red_pixel_threshold: 30000
+    white_pixel_threshold: 35000
+    white_stop_max_count: 190
+
+parking_sign_node:
+  ros__parameters:
+    image_topic: /camera/image/compressed
+    hsv_blue_lower: [100, 50, 50]
+    hsv_blue_upper: [130, 255, 255]
+    blue_pixel_threshold: 1000
+    roi: [270, 331, 325, 640]
+    require_tunnel_done: false   # 터널 미션 없으면 false
+    tunnel_pass_frames: 240
+
+rubbercone_node:
+  ros__parameters:
+    image_topic: /camera/image/compressed
+    hsv_orange_lower: [0, 41, 223]
+    hsv_orange_upper: [66, 255, 255]
+    orange_pixel_threshold: 10000
+
+main_planner:
+  ros__parameters:
+    control_topic: /control
+    loop_hz: 30.0
+    steering_gain: 0.003      # 픽셀 오차(±320) -> steering percent(±1) 변환
+    invert_steering: false
+    throttle_gain: 1.0        # speed(0.2~0.5) -> throttle percent
+    max_throttle: 0.6
+    white_cnt_threshold: 220
+
+control_node:
+  ros__parameters:
+    control_topic: /control
+    command_hz: 30.0
+    command_timeout: 0.5
+    i2c_bus: 1                # JetRacer(Jetson)=1, TOPST D3-G=3
+    pca9685_addr: 0x40
+    steering_channel: 0
+    throttle_channel: 1
+    steer_trim: 0.0
+    max_throttle: 0.6
+    dry_run: false            # 하드웨어 없이 테스트 시 true
