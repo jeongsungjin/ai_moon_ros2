@@ -79,6 +79,24 @@ ros2 launch car_planner auto_driving.launch.py use_control:=false
 ros2 topic pub --once /e_stop std_msgs/msg/Bool "{data: true}"
 ```
 
+### 모터/서보 단독 테스트 (인지 없이 하드웨어만)
+
+첫 하드웨어 점검용 — 조향 방향, ESC 캘리브레이션, i2c 연결 확인:
+
+```bash
+# ① 조향 서보만 좌우 스윕 (바퀴 안 돎)
+ros2 launch car_planner motor_test.launch.py
+
+# ② 구동 모터 테스트 (⚠️ 차 들어올리고!)
+ros2 launch car_planner motor_test.launch.py mode:=throttle throttle:=0.2
+
+# ③ 조향 스윕 + 구동 동시
+ros2 launch car_planner motor_test.launch.py mode:=both throttle:=0.15 duration:=10.0
+```
+
+duration(기본 5초) 경과 후 자동으로 중립을 유지한다. 테스트 노드의 스로틀은
+±0.5 로 강제 클램프되며, `/e_stop` 도 동일하게 동작한다.
+
 디버그: `/lane_detection/image/debug` (슬라이딩윈도우 시각화, jpeg) 를
 `rqt_image_view` 나 D-Racer-Kit monitor 대시보드로 확인.
 

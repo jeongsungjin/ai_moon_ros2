@@ -19,6 +19,7 @@ setup(
     entry_points={
         'console_scripts': [
             'control_node = control.control_node:main',
+            'motor_test_node = control.motor_test_node:main',
         ],
     },
 )
