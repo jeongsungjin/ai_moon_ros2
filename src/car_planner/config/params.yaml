@@ -37,6 +37,10 @@ lane_detection_node:
     hsv_white_upper: [179, 60, 255]
     hsv_red_lower: [145, 35, 35]
     hsv_red_upper: [179, 255, 255]
+    # 구(2024) 대회 미션 — 새 대회 미션 확정 전까지 OFF 유지
+    # (흰색이 차선 마스크에 포함되므로 white_stop 켜려면 임계값 재튜닝 필수)
+    enable_red_slowdown: false
+    enable_white_stop: false
     red_pixel_threshold: 30000
     white_pixel_threshold: 35000
     white_stop_max_count: 190

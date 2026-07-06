@@ -70,7 +70,11 @@ class LaneDetectionNode(Node):
         self.declare_parameter('hsv_red_lower', [145, 35, 35])
         self.declare_parameter('hsv_red_upper', [179, 255, 255])
 
-        # 미션 임계값
+        # 구(2024) 대회 미션 — 새 대회 미션 확정 전까지 기본 OFF
+        # 주의: 흰색이 차선 마스크에 포함되므로 enable_white_stop 을 켜려면
+        #       차선 픽셀량과 겹치지 않게 white_pixel_threshold 재튜닝 필수
+        self.declare_parameter('enable_red_slowdown', False)
+        self.declare_parameter('enable_white_stop', False)
         self.declare_parameter('red_pixel_threshold', 30000)
         self.declare_parameter('white_pixel_threshold', 35000)
         self.declare_parameter('white_stop_max_count', 190)
@@ -98,6 +102,8 @@ class LaneDetectionNode(Node):
         self.lower_red = np.array(self.get_parameter('hsv_red_lower').value)
         self.upper_red = np.array(self.get_parameter('hsv_red_upper').value)
 
+        self.enable_red_slowdown = bool(self.get_parameter('enable_red_slowdown').value)
+        self.enable_white_stop = bool(self.get_parameter('enable_white_stop').value)
         self.red_pixel_threshold = int(self.get_parameter('red_pixel_threshold').value)
         self.white_pixel_threshold = int(self.get_parameter('white_pixel_threshold').value)
         self.white_stop_max_count = int(self.get_parameter('white_stop_max_count').value)
@@ -168,7 +174,8 @@ class LaneDetectionNode(Node):
         for p in params:
             if p.name in hsv_map:
                 setattr(self, hsv_map[p.name], np.array(p.value))
-            elif p.name in ('lane_use_white', 'lane_use_orange', 'lane_use_yellow'):
+            elif p.name in ('lane_use_white', 'lane_use_orange', 'lane_use_yellow',
+                            'enable_red_slowdown', 'enable_white_stop'):
                 setattr(self, p.name, bool(p.value))
             elif p.name in ('red_pixel_threshold', 'white_pixel_threshold'):
                 setattr(self, p.name, int(p.value))
@@ -302,12 +309,15 @@ class LaneDetectionNode(Node):
 
         self.motor = self.speed_fast if self.version == 'fast' else self.speed_safe
 
-        # 미션: 빨간색 차로 구간 감속
-        if np.count_nonzero(warped_img_red) > self.red_pixel_threshold:
+        # (구 대회 미션) 빨간색 차로 구간 감속 — enable_red_slowdown 으로 게이트
+        if (self.enable_red_slowdown
+                and np.count_nonzero(warped_img_red) > self.red_pixel_threshold):
             self.motor = self.speed_red_zone
 
-        # 미션: 흰색 횡단보도 구간 정지
-        elif (self.stop_count < self.white_stop_max_count
+        # (구 대회 미션) 흰색 횡단보도 구간 정지 — enable_white_stop 으로 게이트
+        # ⚠️ 흰색이 차선 마스크에 포함된 상태에서는 차선 픽셀만으로 오발동 가능
+        elif (self.enable_white_stop
+              and self.stop_count < self.white_stop_max_count
               and np.count_nonzero(warped_img_white) > self.white_pixel_threshold):
             self.motor = 0.0
             self.stop_count += 1

@@ -87,14 +87,16 @@ ros2 param set /control_node steer_trim 0.05         # 직진인데 한쪽으로
 
 | 증상 | 파라미터 | 방향 |
 |------|----------|------|
-| 차선을 마스크가 못 잡음 | `hsv_yellow_*`, `hsv_white_*` | show_gui 트랙바로 탐색 |
+| 흰 차선을 못 잡음 | `hsv_white_*` | `ros2 param set` 실시간 반영됨 |
+| 주황 차선을 못 잡음 | `hsv_orange_*` | 기본 H 5~25, `ros2 param set` 실시간 반영됨 |
+| 차선 색 조합 변경 | `lane_use_white/orange/yellow` | 기본: 흰 ✅ 주황 ✅ 노랑 ❌ |
 | 조향 반대 | `main_planner: invert_steering` | true |
 | 코너에서 못 꺾음 | `main_planner: steering_gain` | ↑ (0.003 → 0.004~0.006) |
 | 직선에서 지그재그 | `main_planner: steering_gain` | ↓ (0.003 → 0.002) |
 | 직진인데 쏠림 | `control_node: steer_trim` | 쏠리는 반대쪽으로 ±0.05 씩 |
 | 너무 빠름/느림 | `control_node: max_throttle` | 0.3 에서 시작해 조정 |
-| 빨간 구간 감속 오작동 | `red_pixel_threshold` | 오탐이면 ↑ |
-| 횡단보도 정지 오작동 | `white_pixel_threshold` | 오탐이면 ↑ |
+| 빨간 감속 미션 (구 대회) | `enable_red_slowdown` | 기본 false — 새 미션 확정 시만 켜기 |
+| 횡단보도 정지 미션 (구 대회) | `enable_white_stop` | 기본 false — 켜려면 임계값 재튜닝 필수 (흰 차선과 겹침) |
 | 모터가 아예 안 돎 | `control_node: i2c_bus` | JetRacer=1, D3-G=3 확인 |
 | 서보 각도 범위 이상 | `servo_center_us`, `servo_span_us` | 중립 1500 기준 조정 |
 

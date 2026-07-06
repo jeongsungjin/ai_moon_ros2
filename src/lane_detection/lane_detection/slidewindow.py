@@ -51,7 +51,9 @@ class SlideWindow:
         road_width = 0.5
         half_road_width = 0.5 * road_width
 
-        line_flag = 3
+        left_found = False
+        right_found = False
+
         if self.lane_side in ("LEFT", "BOTH"):
             pts_left = np.array(
                 [[win_l_w_l, win_h2], [win_l_w_l, win_h1], [win_l_w_r, win_h1], [win_l_w_r, win_h2]],
@@ -63,10 +65,8 @@ class SlideWindow:
                 & (nonzeroy > win_h1) & (nonzerox <= win_l_w_r)
             ).nonzero()[0]
             if len(good_left_inds) > 0:
-                line_flag = 1
+                left_found = True
                 left_lane_inds = np.concatenate((left_lane_inds, good_left_inds))
-            else:
-                line_flag = 3
 
         if self.lane_side in ("RIGHT", "BOTH"):
             pts_right = np.array(
@@ -79,10 +79,17 @@ class SlideWindow:
                 & (nonzeroy > win_h1) & (nonzerox <= win_r_w_r)
             ).nonzero()[0]
             if len(good_right_inds) > 0:
-                line_flag = 2
+                right_found = True
                 right_lane_inds = np.concatenate((right_lane_inds, good_right_inds))
-            else:
-                line_flag = 3
+
+        # 기준 차선 선택: 오른쪽 우선 (원본 동작), 없으면 왼쪽 폴백 (원본은 바로 MID 였음)
+        # -> 코너에서 오른쪽 차선을 잠깐 놓쳐도 왼쪽 차선으로 계속 추종
+        if right_found:
+            line_flag = 2
+        elif left_found:
+            line_flag = 1
+        else:
+            line_flag = 3
 
         y_current = height - 1
         x_current = None
