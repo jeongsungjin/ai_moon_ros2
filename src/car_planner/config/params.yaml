@@ -22,7 +22,13 @@ lane_detection_node:
     use_pid: false
     publish_debug_image: true
     show_gui: false           # 모니터/VNC 연결 시 true → imshow + HSV 트랙바
+    # 차선 마스크에 들어갈 색 (새 트랙: 흰색 + 주황)
+    lane_use_white: true
+    lane_use_orange: true
+    lane_use_yellow: false    # 구 트랙(노란 차선)용, 현재 미사용
     # HSV 튜닝값 (조명 환경에 맞게 트랙에서 조정)
+    hsv_orange_lower: [5, 80, 80]     # 주황 차선 — 현장 튜닝 필요
+    hsv_orange_upper: [25, 255, 255]
     hsv_yellow_lower: [20, 110, 110]
     hsv_yellow_upper: [35, 255, 255]
     hsv_left_yellow_lower: [20, 110, 110]

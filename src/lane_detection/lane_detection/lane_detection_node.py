@@ -13,6 +13,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rcl_interfaces.msg import SetParametersResult
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Bool, Float32, Int32, String
 
@@ -52,11 +53,18 @@ class LaneDetectionNode(Node):
         # 모니터/VNC 연결 시 imshow + HSV 트랙바 표시 (헤드리스 SSH 에서는 false 유지)
         self.declare_parameter('show_gui', False)
 
+        # 차선 마스크에 포함할 색 선택 (새 트랙: 흰색 + 주황 차선)
+        self.declare_parameter('lane_use_white', True)
+        self.declare_parameter('lane_use_orange', True)
+        self.declare_parameter('lane_use_yellow', False)   # 구 트랙(노란 차선) 호환용
+
         # HSV 범위 (원본 튜닝값 그대로 기본값)
         self.declare_parameter('hsv_yellow_lower', [10, 108, 125])
         self.declare_parameter('hsv_yellow_upper', [35, 255, 255])
         self.declare_parameter('hsv_left_yellow_lower', [15, 80, 90])
         self.declare_parameter('hsv_left_yellow_upper', [30, 255, 235])
+        self.declare_parameter('hsv_orange_lower', [5, 80, 80])
+        self.declare_parameter('hsv_orange_upper', [25, 255, 255])
         self.declare_parameter('hsv_white_lower', [30, 0, 151])
         self.declare_parameter('hsv_white_upper', [122, 67, 207])
         self.declare_parameter('hsv_red_lower', [145, 35, 35])
@@ -75,10 +83,16 @@ class LaneDetectionNode(Node):
         self.publish_debug_image = bool(self.get_parameter('publish_debug_image').value)
         self.show_gui = bool(self.get_parameter('show_gui').value)
 
+        self.lane_use_white = bool(self.get_parameter('lane_use_white').value)
+        self.lane_use_orange = bool(self.get_parameter('lane_use_orange').value)
+        self.lane_use_yellow = bool(self.get_parameter('lane_use_yellow').value)
+
         self.lower_yellow = np.array(self.get_parameter('hsv_yellow_lower').value)
         self.upper_yellow = np.array(self.get_parameter('hsv_yellow_upper').value)
         self.lower_left_yellow = np.array(self.get_parameter('hsv_left_yellow_lower').value)
         self.upper_left_yellow = np.array(self.get_parameter('hsv_left_yellow_upper').value)
+        self.lower_orange = np.array(self.get_parameter('hsv_orange_lower').value)
+        self.upper_orange = np.array(self.get_parameter('hsv_orange_upper').value)
         self.lower_white = np.array(self.get_parameter('hsv_white_lower').value)
         self.upper_white = np.array(self.get_parameter('hsv_white_upper').value)
         self.lower_red = np.array(self.get_parameter('hsv_red_lower').value)
@@ -130,6 +144,9 @@ class LaneDetectionNode(Node):
         if self.show_gui:
             self.setup_gui()
 
+        # ros2 param set 실시간 반영 (HSV / 차선 색 선택)
+        self.add_on_set_parameters_callback(self.on_param_change)
+
         process_hz = float(self.get_parameter('process_hz').value)
         self.timer = self.create_timer(1.0 / process_hz, self.process)
 
@@ -137,6 +154,28 @@ class LaneDetectionNode(Node):
             f'lane_detection_node started: image={image_topic}, '
             f'version={self.version}, show_gui={self.show_gui}'
         )
+
+    # ---------------- 파라미터 실시간 반영 ----------------
+    def on_param_change(self, params):
+        """ros2 param set 으로 HSV/색 선택/임계값을 재시작 없이 튜닝."""
+        hsv_map = {
+            'hsv_yellow_lower': 'lower_yellow', 'hsv_yellow_upper': 'upper_yellow',
+            'hsv_left_yellow_lower': 'lower_left_yellow', 'hsv_left_yellow_upper': 'upper_left_yellow',
+            'hsv_orange_lower': 'lower_orange', 'hsv_orange_upper': 'upper_orange',
+            'hsv_white_lower': 'lower_white', 'hsv_white_upper': 'upper_white',
+            'hsv_red_lower': 'lower_red', 'hsv_red_upper': 'upper_red',
+        }
+        for p in params:
+            if p.name in hsv_map:
+                setattr(self, hsv_map[p.name], np.array(p.value))
+            elif p.name in ('lane_use_white', 'lane_use_orange', 'lane_use_yellow'):
+                setattr(self, p.name, bool(p.value))
+            elif p.name in ('red_pixel_threshold', 'white_pixel_threshold'):
+                setattr(self, p.name, int(p.value))
+            elif p.name in ('speed_safe', 'speed_fast', 'speed_red_zone'):
+                setattr(self, p.name, float(p.value))
+            self.get_logger().info(f'param updated: {p.name} = {p.value}')
+        return SetParametersResult(successful=True)
 
     # ---------------- GUI (트랙바/imshow, 원본 워크플로우) ----------------
     def setup_gui(self):
@@ -146,6 +185,8 @@ class LaneDetectionNode(Node):
             bars = [
                 ('Yellow Lower H', self.lower_yellow[0], 179), ('Yellow Lower S', self.lower_yellow[1], 255), ('Yellow Lower V', self.lower_yellow[2], 255),
                 ('Yellow Upper H', self.upper_yellow[0], 179), ('Yellow Upper S', self.upper_yellow[1], 255), ('Yellow Upper V', self.upper_yellow[2], 255),
+                ('Orange Lower H', self.lower_orange[0], 179), ('Orange Lower S', self.lower_orange[1], 255), ('Orange Lower V', self.lower_orange[2], 255),
+                ('Orange Upper H', self.upper_orange[0], 179), ('Orange Upper S', self.upper_orange[1], 255), ('Orange Upper V', self.upper_orange[2], 255),
                 ('White Lower H', self.lower_white[0], 179), ('White Lower S', self.lower_white[1], 255), ('White Lower V', self.lower_white[2], 255),
                 ('White Upper H', self.upper_white[0], 179), ('White Upper S', self.upper_white[1], 255), ('White Upper V', self.upper_white[2], 255),
                 ('Red Lower H', self.lower_red[0], 179), ('Red Lower S', self.lower_red[1], 255), ('Red Lower V', self.lower_red[2], 255),
@@ -162,6 +203,8 @@ class LaneDetectionNode(Node):
         g = lambda name: cv2.getTrackbarPos(name, 'Trackbars')
         self.lower_yellow = np.array([g('Yellow Lower H'), g('Yellow Lower S'), g('Yellow Lower V')])
         self.upper_yellow = np.array([g('Yellow Upper H'), g('Yellow Upper S'), g('Yellow Upper V')])
+        self.lower_orange = np.array([g('Orange Lower H'), g('Orange Lower S'), g('Orange Lower V')])
+        self.upper_orange = np.array([g('Orange Upper H'), g('Orange Upper S'), g('Orange Upper V')])
         self.lower_white = np.array([g('White Lower H'), g('White Lower S'), g('White Lower V')])
         self.upper_white = np.array([g('White Upper H'), g('White Upper S'), g('White Upper V')])
         self.lower_red = np.array([g('Red Lower H'), g('Red Lower S'), g('Red Lower V')])
@@ -198,16 +241,27 @@ class LaneDetectionNode(Node):
 
         img_hsv = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2HSV)
 
-        # 노란색 / 흰색 / 빨간색 마스크
+        # 색상별 마스크
         if not self.tunnel_done_flag:
             mask_yellow = cv2.inRange(img_hsv, self.lower_yellow, self.upper_yellow)
         else:
             mask_yellow = cv2.inRange(img_hsv, self.lower_left_yellow, self.upper_left_yellow)
 
+        mask_orange = cv2.inRange(img_hsv, self.lower_orange, self.upper_orange)
         mask_white = cv2.inRange(img_hsv, self.lower_white, self.upper_white)
         mask_red = cv2.inRange(img_hsv, self.lower_red, self.upper_red)
 
-        filtered_img = cv2.bitwise_and(frame_resized, frame_resized, mask=mask_yellow)
+        # 차선 마스크 합성: 활성화된 색상들의 OR (새 트랙 = 흰색 + 주황)
+        # (기존 코드는 노란색만 슬라이딩윈도우에 들어갔음 — 흰색은 정지선 카운트 전용이었음)
+        mask_lane = np.zeros(mask_white.shape, dtype=np.uint8)
+        if self.lane_use_white:
+            mask_lane = cv2.bitwise_or(mask_lane, mask_white)
+        if self.lane_use_orange:
+            mask_lane = cv2.bitwise_or(mask_lane, mask_orange)
+        if self.lane_use_yellow:
+            mask_lane = cv2.bitwise_or(mask_lane, mask_yellow)
+
+        filtered_img = cv2.bitwise_and(frame_resized, frame_resized, mask=mask_lane)
 
         # Perspective Transform (원본 좌표 유지)
         left_margin = 200
@@ -270,7 +324,8 @@ class LaneDetectionNode(Node):
         # GUI 모드: 원본에서 주석 처리돼 있던 imshow 복원
         if self.show_gui:
             cv2.imshow('Original Image', frame_resized)
-            cv2.imshow('Yellow Mask', cv2.bitwise_and(frame_resized, frame_resized, mask=mask_yellow))
+            cv2.imshow('Lane Mask (combined)', filtered_img)
+            cv2.imshow('Orange Mask', cv2.bitwise_and(frame_resized, frame_resized, mask=mask_orange))
             cv2.imshow('White Mask', cv2.bitwise_and(frame_resized, frame_resized, mask=mask_white))
             cv2.imshow('Red Mask', cv2.bitwise_and(frame_resized, frame_resized, mask=mask_red))
             cv2.imshow('Warped Image', warped_img)
