@@ -155,8 +155,8 @@ class MainPlannerNode(Node):
             steering = -steering
         msg.steering = float(np.clip(steering, -1.0, 1.0))
 
-        throttle = float(motor_msg) * self.throttle_gain
-        msg.throttle = float(np.clip(throttle, -self.max_throttle, self.max_throttle))
+        throttle = float(motor_msg) * self.throttle_gain * 0
+        msg.throttle = float(np.clip(throttle, -self.max_throttle, self.max_throttle)) * 0
 
         self.control_pub.publish(msg)
 
