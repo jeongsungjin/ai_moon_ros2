@@ -25,10 +25,10 @@ lane_detection_node:
     # HSV 튜닝값 (조명 환경에 맞게 트랙에서 조정)
     hsv_yellow_lower: [10, 108, 125]
     hsv_yellow_upper: [35, 255, 255]
-    hsv_left_yellow_lower: [15, 80, 90]
-    hsv_left_yellow_upper: [30, 255, 235]
-    hsv_white_lower: [30, 0, 151]
-    hsv_white_upper: [122, 67, 207]
+    hsv_left_yellow_lower: [20, 110, 110]
+    hsv_left_yellow_upper: [35, 255, 255]
+    hsv_white_lower: [0, 0, 180]
+    hsv_white_upper: [179, 60, 255]
     hsv_red_lower: [145, 35, 35]
     hsv_red_upper: [179, 255, 255]
     red_pixel_threshold: 30000
