@@ -16,7 +16,7 @@ lane_detection_node:
     image_topic: /camera/image/compressed
     process_hz: 30.0
     version: safe             # 'safe' | 'fast'
-    speed_safe: 0.45
+    speed_safe: 0.19
     speed_fast: 0.5
     speed_red_zone: 0.2
     use_pid: false

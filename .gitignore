@@ -16,3 +16,4 @@ __pycache__/
 # rosbag
 *.db3
 rosbag2_*/
+bags/
