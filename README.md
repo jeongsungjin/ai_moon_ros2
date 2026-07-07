@@ -100,6 +100,35 @@ duration(기본 5초) 경과 후 자동으로 중립을 유지한다. 테스트 
 디버그: `/lane_detection/image/debug` (슬라이딩윈도우 시각화, jpeg) 를
 `rqt_image_view` 나 D-Racer-Kit monitor 대시보드로 확인.
 
+## YOLO26 신호등/표지판 인지
+
+데이터셋: `perception.yolo26/` (Roboflow, 4클래스 green/left/red/right — git 미추적, 627MB)
+
+```bash
+# ① 학습 (GPU PC 또는 Colab)
+pip install "ultralytics>=8.3.200"
+python3 tools/train_yolo26.py                 # 100 epochs, best.pt → models/ 자동 복사
+python3 tools/train_yolo26.py --eval-only     # test 셋 평가만
+
+# ② 모델을 보드로 전송
+scp models/yolo26n_traffic.pt <board>:~/ai_moon_ros2/models/
+
+# ③ 보드에서 인지 노드 실행 (pip3 install ultralytics 필요)
+ros2 launch yolo_detect yolo_detect.launch.py                    # lane_drive 와 병행
+ros2 launch yolo_detect yolo_detect.launch.py with_camera:=true  # 단독 테스트
+
+# ④ 확인
+ros2 topic echo /traffic_sign        # 검출 클래스 이름 (green/left/red/right)
+# 웹 뷰어에 /yolo/image/debug 추가하면 박스 시각화 확인 가능
+```
+
+검출 → 발행 조건: `conf >= 0.5` **그리고** 박스 높이 `>= min_box_height_px`(반응 거리)
+**그리고** `stable_frames`(3)회 연속 검출. 미션 노드가 `/traffic_sign` 을 구독해
+`/motor_sign` (DriveCommand) 을 발행하면 main_planner 가 SIGN 모드로 중재한다.
+
+> ⚠️ 학습 시 좌우반전 증강을 껐음 (`fliplr=0.0`) — left/right 표지판 의미가 뒤집히기 때문.
+> 데이터 추가 후 재학습 시에도 유지할 것.
+
 ## 튜닝 포인트 (`src/car_planner/config/params.yaml`)
 
 - **HSV 범위**: 대회장 조명에 맞게 `hsv_*` 값 조정 (기존 트랙바 대신 파라미터)

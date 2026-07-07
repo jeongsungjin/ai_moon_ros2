@@ -84,3 +84,16 @@ control_node:
     steer_trim: 0.0
     max_throttle: 0.6
     dry_run: false            # 하드웨어 없이 테스트 시 true
+
+yolo_detect_node:
+  ros__parameters:
+    model_path: models/yolo26n_traffic.pt   # 학습 후 배치 (실행 위치 기준 상대경로 or 절대경로)
+    image_topic: /camera/image/compressed
+    detect_topic: /traffic_sign
+    infer_hz: 10.0            # 보드 성능에 맞게 (버벅이면 5.0)
+    conf_threshold: 0.5
+    imgsz: 640
+    min_box_height_px: 30     # 이보다 작은(먼) 검출 무시 — 반응 거리 튜닝
+    stable_frames: 3          # N회 연속 검출 시 발행 (오검출 억제)
+    publish_debug_image: true
+    device: ''                # ''=자동, 'cpu', '0'(CUDA)

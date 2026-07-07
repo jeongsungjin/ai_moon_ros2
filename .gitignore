@@ -16,3 +16,15 @@ __pycache__/
 # rosbag
 *.db3
 rosbag2_*/
+
+# YOLO 데이터셋 (627MB — Roboflow 에서 재다운로드 가능, data.yaml 만 추적)
+perception.yolo26/*
+!perception.yolo26/data.yaml
+!perception.yolo26/README.dataset.txt
+!perception.yolo26/README.roboflow.txt
+
+# 학습 산출물 / 모델 가중치 (모델은 scp 로 보드 전달)
+runs/
+models/*.pt
+models/*.onnx
+*.engine
