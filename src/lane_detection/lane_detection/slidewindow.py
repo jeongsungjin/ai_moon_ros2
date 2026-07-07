@@ -34,19 +34,18 @@ class SlideWindow:
         nonzeroy = np.array(nonzero[0])
         nonzerox = np.array(nonzero[1])
         margin = 60
-        minpix = 20   # 이하면 노이즈로 보고 mean 대신 polyfit 보간 사용
+        minpix = 0
         left_lane_inds = np.array([], dtype=int)
         right_lane_inds = np.array([], dtype=int)
 
         # 초기 탐색 윈도우 (화면 하단)
-        win_h1 = 380
+        win_h1 = 150
         win_h2 = 480
 
-        init_margin = 60
-        win_l_w_l = 145 - 120
-        win_l_w_r = 145 + 155
-        win_r_w_l = 495 - 155
-        win_r_w_r = 495 + 120  
+        win_l_w_l = 145 - 160
+        win_l_w_r = 145 + 160
+        win_r_w_l = 495 - 160
+        win_r_w_r = 495 + 160
 
         circle_height = 200
         road_width = 0.54
@@ -88,15 +87,7 @@ class SlideWindow:
         if right_found:
             line_flag = 2
         elif left_found:
-            # x 260~300 라인은 모호함: 왼쪽으로 밀렸을 때의 진짜 왼쪽 차선일 수도,
-            # 오른쪽으로 크게 밀렸을 때 넘어온 오른쪽 차선일 수도 있다.
-            # 직전 목표점(x_previous)으로 구분: 목표가 중앙보다 왼쪽(<320)이었다면
-            # 차가 오른쪽으로 밀린 상태이므로 오인 -> 버린다 (역조향 이탈 방지).
-            left_x = np.mean(nonzerox[left_lane_inds])
-            if left_x < 260 or self.x_previous >= 320:
-                line_flag = 1
-            else:
-                line_flag = 3
+            line_flag = 1
         else:
             line_flag = 3
 
@@ -110,7 +101,7 @@ class SlideWindow:
         else:
             # 차선 미검출: 이동평균으로 이전 위치 유지
             self.current_line = "MID"
-            alpha = 0.94
+            alpha = 0.9
             self.x_previous = int(alpha * self.x_previous + (1 - alpha) * x_location)
             x_location = self.x_previous
             return out_img, x_location, self.current_line
@@ -139,11 +130,10 @@ class SlideWindow:
                     x_current = int(np.mean(nonzerox[good_left_inds]))
                 elif len(left_lane_inds) > 0:
                     p_left = np.polyfit(nonzeroy[left_lane_inds], nonzerox[left_lane_inds], 2)
-                    # polyfit 외삽은 픽셀이 적으면 화면 밖 수천 px로 폭주할 수 있다 -> 화면 안으로 클램프
-                    x_current = int(np.clip(np.polyval(p_left, win_y_high), 0, width))
+                    x_current = int(np.polyval(p_left, win_y_high))
 
                 if circle_height - 10 <= win_y_low < circle_height + 10:
-                    x_location = int(np.clip(x_current + width * half_road_width, 0, width - 1))
+                    x_location = int(x_current + width * half_road_width)
                     cv2.circle(out_img, (x_location, circle_height), 10, (0, 0, 255), 5)
 
             elif line_flag == 2:
@@ -169,15 +159,13 @@ class SlideWindow:
                     x_current = int(np.mean(nonzerox[good_right_inds]))
                 elif len(right_lane_inds) > 0:
                     p_right = np.polyfit(nonzeroy[right_lane_inds], nonzerox[right_lane_inds], 2)
-                    # polyfit 외삽 폭주 방지 (14s 지점 x_location -44130 사고)
-                    x_current = int(np.clip(np.polyval(p_right, win_y_high), 0, width))
+                    x_current = int(np.polyval(p_right, win_y_high))
 
                 if circle_height - 10 <= win_y_low < circle_height + 10:
-                    x_location = int(np.clip(x_current - width * half_road_width, 0, width - 1))
+                    x_location = int(x_current - width * half_road_width)
                     cv2.circle(out_img, (x_location, circle_height), 10, (0, 0, 255), 5)
 
-        # 검출 성공 시 x_previous 갱신 (원본은 주석 처리돼 있었으나,
-        # MID fallback 이 320(직진)으로 스냅하지 않고 마지막 목표를 유지하도록
-        # 켬 — 차선에 붙어 잠깐 놓쳐도 복구 조향이 이어진다)
-        self.x_previous = x_location
+        # 원본과 동일: 검출 성공 시 x_previous 는 갱신하지 않음
+        # (원본 slidewindow_both_lane.py 에서 `self.x_previous = x_location` 이
+        #  주석 처리되어 있었음 — 미검출(MID) fallback 은 320 쪽으로 수렴)
         return out_img, x_location, self.current_line
