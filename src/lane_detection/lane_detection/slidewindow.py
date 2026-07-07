@@ -29,11 +29,11 @@ class SlideWindow:
         height, width = img.shape[0], img.shape[1]
 
         window_height = 20
-        nwindows = 20
+        nwindows = 22
         nonzero = img.nonzero()
         nonzeroy = np.array(nonzero[0])
         nonzerox = np.array(nonzero[1])
-        margin = 40
+        margin = 60
         minpix = 0
         left_lane_inds = np.array([], dtype=int)
         right_lane_inds = np.array([], dtype=int)
@@ -42,13 +42,14 @@ class SlideWindow:
         win_h1 = 380
         win_h2 = 480
 
-        win_l_w_l = 145 - 80
-        win_l_w_r = 145 + 80
-        win_r_w_l = 495 - 80
-        win_r_w_r = 495 + 80
+        init_margin = 60
+        win_l_w_l = 145 - 120
+        win_l_w_r = 145 + 100
+        win_r_w_l = 495 - 100
+        win_r_w_r = 495 + 120  
 
-        circle_height = 100
-        road_width = 0.5
+        circle_height = 280
+        road_width = 0.545
         half_road_width = 0.5 * road_width
 
         left_found = False

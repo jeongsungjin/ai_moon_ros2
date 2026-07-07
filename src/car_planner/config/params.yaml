@@ -66,7 +66,7 @@ main_planner:
   ros__parameters:
     control_topic: /control
     loop_hz: 30.0
-    steering_gain: 0.003      # 픽셀 오차(±320) -> steering percent(±1) 변환
+    steering_gain: 0.005      # 픽셀 오차(±320) -> steering percent(±1) 변환
     invert_steering: false
     throttle_gain: 1.0        # speed(0.2~0.5) -> throttle percent
     max_throttle: 0.6
