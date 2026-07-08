@@ -1,0 +1,16 @@
+# YOLO26 신호등/표지판 데이터셋 (Roboflow export)
+# 주의: Roboflow 기본 export 의 '../train/images' 는 ultralytics 가 yaml 위치
+#       기준으로 해석해 폴더 밖을 가리키므로 상대경로를 수정했음
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 4
+names: ['green', 'left', 'red', 'right']
+
+roboflow:
+  workspace: s-workspace-thayg
+  project: perception-wbbjo
+  version: dataset
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/s-workspace-thayg/perception-wbbjo/dataset/dataset

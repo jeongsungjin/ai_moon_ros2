@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>yolo_detect</name>
+  <version>1.0.0</version>
+  <description>YOLO26 traffic light / sign detection node (green/left/red/right)</description>
+  <maintainer email="smoony0226ai@kookmin.ac.kr">seongjin</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <!-- ultralytics 는 rosdep 미지원: pip3 install "ultralytics>=8.3.200" -->
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -11,6 +11,10 @@ control_node (PCA9685 구동) + motor_test_node (테스트 패턴 발행)
 
   # 조향 + 구동 동시
   ros2 launch car_planner motor_test.launch.py mode:=both throttle:=0.15 duration:=10.0
+
+  # 직진 보정 (고정 조향 + 일정 스로틀 — steering 값을 바꿔가며 똑바로 가는 값 찾기)
+  # 찾은 값을 params.yaml 의 control_node: steer_trim 에 넣으면 보정 완료
+  ros2 launch car_planner motor_test.launch.py mode:=throttle throttle:=0.35 steering:=0.05 duration:=3.0
 """
 
 import os
@@ -30,6 +34,7 @@ def generate_launch_description():
 
     mode = LaunchConfiguration('mode')
     throttle = LaunchConfiguration('throttle')
+    steering = LaunchConfiguration('steering')
     duration = LaunchConfiguration('duration')
     sweep_period = LaunchConfiguration('sweep_period')
 
@@ -41,6 +46,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'throttle', default_value='0.2',
             description='throttle/both 모드에서의 스로틀 percent (max 0.5)',
+        ),
+        DeclareLaunchArgument(
+            'steering', default_value='0.0',
+            description='throttle 모드에서의 고정 조향값 (직진 보정: 똑바로 가는 값 찾기)',
         ),
         DeclareLaunchArgument(
             'duration', default_value='5.0',
@@ -68,6 +77,7 @@ def generate_launch_description():
             parameters=[{
                 'mode': mode,
                 'throttle': ParameterValue(throttle, value_type=float),
+                'steering': ParameterValue(steering, value_type=float),
                 'duration_sec': ParameterValue(duration, value_type=float),
                 'sweep_period_sec': ParameterValue(sweep_period, value_type=float),
             }],

@@ -16,7 +16,7 @@ lane_detection_node:
     image_topic: /camera/image/compressed
     process_hz: 30.0
     version: safe             # 'safe' | 'fast'
-    speed_safe: 0.19
+    speed_safe: 0.25
     speed_fast: 0.5
     speed_red_zone: 0.2
     use_pid: false
@@ -33,10 +33,11 @@ lane_detection_node:
     hsv_yellow_upper: [35, 255, 255]
     hsv_left_yellow_lower: [20, 110, 110]
     hsv_left_yellow_upper: [35, 255, 255]
-    hsv_white_lower: [0, 0, 180]
-    hsv_white_upper: [179, 60, 255]
+    hsv_white_lower: [0, 0, 242]
+    hsv_white_upper: [179, 255, 255]
     hsv_red_lower: [145, 35, 35]
     hsv_red_upper: [179, 255, 255]
+
     # 구(2024) 대회 미션 — 새 대회 미션 확정 전까지 OFF 유지
     # (흰색이 차선 마스크에 포함되므로 white_stop 켜려면 임계값 재튜닝 필수)
     enable_red_slowdown: false
@@ -81,7 +82,7 @@ control_node:
     pca9685_addr: 0x40
     steering_channel: 0
     throttle_channel: 1
-    steer_trim: 0.0
+    steer_trim: 0.12          # 직진 보정 (2026-07-08 topic pub 테스트로 실측 — steering 0.12 에서 직진)
     max_throttle: 0.6
     dry_run: false            # 하드웨어 없이 테스트 시 true
 
