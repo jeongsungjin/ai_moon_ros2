@@ -139,6 +139,7 @@ class LaneDetectionNode(Node):
             self.pid = PID(0.7, 0.0008, 0.15)
 
         self.cv_image = None
+        self.raw_image = None
         self.steer = 0.0
         self.motor = self.speed_safe
         self.white_count = 0
@@ -219,11 +220,9 @@ class LaneDetectionNode(Node):
 
     # ---------------- 콜백 ----------------
     def image_callback(self, msg: CompressedImage):
-        try:
-            raw = np.frombuffer(msg.data, dtype=np.uint8)
-            self.cv_image = cv2.imdecode(raw, cv2.IMREAD_COLOR)
-        except Exception as e:
-            self.get_logger().error(f'Error decoding image: {e}')
+        # 바이트만 저장 — 디코딩은 process() 에서 최신 프레임 1장만 수행
+        # (30Hz 전수 디코딩이 단일 실행 스레드를 포화시켜 process 가 10Hz 에 묶였음)
+        self.raw_image = msg.data
 
     def lane_topic_callback(self, msg: String):
         if msg.data in ('LEFT', 'RIGHT'):
@@ -236,6 +235,14 @@ class LaneDetectionNode(Node):
 
     # ---------------- 메인 처리 (원본 run() 루프) ----------------
     def process(self):
+        if self.raw_image is None:
+            return
+        try:
+            raw = np.frombuffer(self.raw_image, dtype=np.uint8)
+            self.cv_image = cv2.imdecode(raw, cv2.IMREAD_COLOR)
+        except Exception as e:
+            self.get_logger().error(f'Error decoding image: {e}')
+            return
         if self.cv_image is None:
             return
 
@@ -268,7 +275,9 @@ class LaneDetectionNode(Node):
         if self.lane_use_yellow:
             mask_lane = cv2.bitwise_or(mask_lane, mask_yellow)
 
-        filtered_img = cv2.bitwise_and(frame_resized, frame_resized, mask=mask_lane)
+        # 컬러 필터 이미지는 GUI 표시용으로만 필요 (와핑 입력으로는 미사용)
+        filtered_img = (cv2.bitwise_and(frame_resized, frame_resized, mask=mask_lane)
+                        if self.show_gui else None)
 
         # Perspective Transform (원본 좌표 유지)
         left_margin = 200
@@ -287,18 +296,23 @@ class LaneDetectionNode(Node):
         ])
         matrix = cv2.getPerspectiveTransform(src_points, dst_points)
 
-        warped_img = cv2.warpPerspective(filtered_img, matrix, (640, 480))
-        warped_img_white = cv2.warpPerspective(mask_white, matrix, (640, 480))
-        warped_img_yellow = cv2.warpPerspective(mask_yellow, matrix, (640, 480))
-        warped_img_red = cv2.warpPerspective(mask_red, matrix, (640, 480))
+        # 슬라이딩윈도우 입력: 1채널 차선 마스크만 와핑
+        # (기존: 3채널 컬러 와핑 + cvtColor + 미사용 yellow 와핑 → 10fps CPU 병목이라 제거)
+        warped_lane = cv2.warpPerspective(mask_lane, matrix, (640, 480))
 
-        self.yellow_pixel_pub.publish(Int32(data=int(np.count_nonzero(warped_img_yellow))))
+        # 미션용 와핑은 해당 미션이 켜진 경우에만 수행
+        warped_img_red = (cv2.warpPerspective(mask_red, matrix, (640, 480))
+                          if self.enable_red_slowdown else None)
+        warped_img_white = (cv2.warpPerspective(mask_white, matrix, (640, 480))
+                            if self.enable_white_stop else None)
+
+        # 픽셀 모니터링: 와핑 전 마스크 기준 (구독 노드 없음 — 수치 스케일만 달라짐)
+        self.yellow_pixel_pub.publish(Int32(data=int(np.count_nonzero(mask_yellow))))
         self.red_pixel_pub.publish(Int32(data=int(np.count_nonzero(mask_red))))
 
         # 이진화 + 슬라이딩 윈도우
-        grayed_img = cv2.cvtColor(warped_img, cv2.COLOR_BGR2GRAY)
-        bin_img = np.zeros_like(grayed_img)
-        bin_img[grayed_img > 20] = 1
+        bin_img = np.zeros_like(warped_lane)
+        bin_img[warped_lane > 20] = 1
 
         out_img, x_location, _ = self.slidewindow.slidewindow(bin_img)
         self.x_location_pub.publish(Float32(data=float(x_location)))
@@ -327,7 +341,8 @@ class LaneDetectionNode(Node):
             self.white_count += 1
             self.white_cnt_pub.publish(Int32(data=self.white_count))
 
-        self.white_pixel_pub.publish(Int32(data=int(np.count_nonzero(warped_img_white))))
+        white_src = warped_img_white if warped_img_white is not None else mask_white
+        self.white_pixel_pub.publish(Int32(data=int(np.count_nonzero(white_src))))
 
         self.publish_ctrl_cmd(self.motor, self.steer)
 
@@ -338,9 +353,10 @@ class LaneDetectionNode(Node):
             cv2.imshow('Orange Mask', cv2.bitwise_and(frame_resized, frame_resized, mask=mask_orange))
             cv2.imshow('White Mask', cv2.bitwise_and(frame_resized, frame_resized, mask=mask_white))
             cv2.imshow('Red Mask', cv2.bitwise_and(frame_resized, frame_resized, mask=mask_red))
-            cv2.imshow('Warped Image', warped_img)
+            cv2.imshow('Warped Image', warped_lane)
             cv2.imshow('Output Image', out_img)
-            cv2.imshow('Warped White Stop Line', warped_img_white)
+            if warped_img_white is not None:
+                cv2.imshow('Warped White Stop Line', warped_img_white)
             cv2.waitKey(1)
 
         if self.publish_debug_image:

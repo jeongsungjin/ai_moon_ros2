@@ -29,11 +29,11 @@ class SlideWindow:
         height, width = img.shape[0], img.shape[1]
 
         window_height = 20
-        nwindows = 20
+        nwindows = 22
         nonzero = img.nonzero()
         nonzeroy = np.array(nonzero[0])
         nonzerox = np.array(nonzero[1])
-        margin = 40
+        margin = 60
         minpix = 0
         left_lane_inds = np.array([], dtype=int)
         right_lane_inds = np.array([], dtype=int)
@@ -42,12 +42,14 @@ class SlideWindow:
         win_h1 = 380
         win_h2 = 480
 
-        win_l_w_l = 145 - 80
-        win_l_w_r = 145 + 80
-        win_r_w_l = 495 - 80
-        win_r_w_r = 495 + 80
+        # 안쪽 경계를 285/355 로 물려 중앙에 70px 완충지대 확보
+        # (커브에서 왼쪽 차선이 중앙까지 넘어와도 오른쪽 박스가 잡아채지 않게)
+        win_l_w_l = 145 - 140
+        win_l_w_r = 145 + 140
+        win_r_w_l = 495 - 140
+        win_r_w_r = 495 + 140
 
-        circle_height = 100
+        circle_height = 270
         road_width = 0.5
         half_road_width = 0.5 * road_width
 
@@ -93,6 +95,10 @@ class SlideWindow:
 
         y_current = height - 1
         x_current = None
+        # polyfit 캐시: 입력(초기 박스 픽셀)이 루프 중 불변이라 결과가 항상 같음
+        # — 윈도우 미스마다 재계산하던 것이 프레임당 수십 ms 병목이었음
+        p_left = None
+        p_right = None
 
         if line_flag == 1 and len(left_lane_inds) > 0:
             x_current = int(np.mean(nonzerox[left_lane_inds]))
@@ -129,7 +135,8 @@ class SlideWindow:
                 if len(good_left_inds) > minpix:
                     x_current = int(np.mean(nonzerox[good_left_inds]))
                 elif len(left_lane_inds) > 0:
-                    p_left = np.polyfit(nonzeroy[left_lane_inds], nonzerox[left_lane_inds], 2)
+                    if p_left is None:
+                        p_left = np.polyfit(nonzeroy[left_lane_inds], nonzerox[left_lane_inds], 2)
                     x_current = int(np.polyval(p_left, win_y_high))
 
                 if circle_height - 10 <= win_y_low < circle_height + 10:
@@ -158,7 +165,8 @@ class SlideWindow:
                 if len(good_right_inds) > minpix:
                     x_current = int(np.mean(nonzerox[good_right_inds]))
                 elif len(right_lane_inds) > 0:
-                    p_right = np.polyfit(nonzeroy[right_lane_inds], nonzerox[right_lane_inds], 2)
+                    if p_right is None:
+                        p_right = np.polyfit(nonzeroy[right_lane_inds], nonzerox[right_lane_inds], 2)
                     x_current = int(np.polyval(p_right, win_y_high))
 
                 if circle_height - 10 <= win_y_low < circle_height + 10:
