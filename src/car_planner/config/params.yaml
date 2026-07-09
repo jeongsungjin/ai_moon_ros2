@@ -16,12 +16,25 @@ lane_detection_node:
     image_topic: /camera/image/compressed
     process_hz: 30.0
     version: safe             # 'safe' | 'fast'
-    speed_safe: 0.25
+    speed_safe: 0.20
     speed_fast: 0.5
     speed_red_zone: 0.2
     use_pid: false
     publish_debug_image: true
     show_gui: false           # 모니터/VNC 연결 시 true → imshow + HSV 트랙바
+    # 슬라이딩윈도우 튜닝값 (조종기 튜너/param set 으로 실시간 변경 가능)
+    sw_margin: 60             # 추적 윈도우 좌우 반폭
+    sw_win_h1: 380            # 초기 탐색창 윗변 y
+    sw_win_half: 140          # 초기 탐색창 반폭 (145/495 중심)
+    sw_circle_height: 280     # 조향 기준점(ld) y — 80~459
+    sw_road_width: 0.51       # 차선 폭 비율
+    sw_nwindows: 20           # 추적 윈도우 개수 (×20px = 추적 높이, ld 커버 필요)
+    sw_minpix: 0              # 윈도우 유효 최소 픽셀 (노이즈 문턱, 0=1픽셀도 인정)
+    # PID 게인 (use_pid: true 일 때만 사용 — 지그재그/출렁임 억제)
+    pid_kp: 0.7
+    pid_ki: 0.0008
+    pid_kd: 0.15
+
     # 차선 마스크에 들어갈 색 (새 트랙: 흰색 + 주황)
     lane_use_white: true
     lane_use_orange: true
@@ -33,8 +46,8 @@ lane_detection_node:
     hsv_yellow_upper: [35, 255, 255]
     hsv_left_yellow_lower: [20, 110, 110]
     hsv_left_yellow_upper: [35, 255, 255]
-    hsv_white_lower: [0, 0, 242]
-    hsv_white_upper: [179, 255, 255]
+    hsv_white_lower: [0, 0, 188]
+    hsv_white_upper: [179, 20, 255]
     hsv_red_lower: [145, 35, 35]
     hsv_red_upper: [179, 255, 255]
 
@@ -67,7 +80,7 @@ main_planner:
   ros__parameters:
     control_topic: /control
     loop_hz: 30.0
-    steering_gain: 0.003      # 픽셀 오차(±320) -> steering percent(±1) 변환
+    steering_gain: 0.0029      # 픽셀 오차(±320) -> steering percent(±1) 변환
     invert_steering: false
     throttle_gain: 1.0        # speed(0.2~0.5) -> throttle percent
     max_throttle: 0.6

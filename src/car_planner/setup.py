@@ -25,6 +25,7 @@ setup(
         'console_scripts': [
             'main_planner_node = car_planner.main_planner_node:main',
             'web_viewer_node = car_planner.web_viewer_node:main',
+            'battery_node = car_planner.battery_node:main',
         ],
     },
 )

@@ -8,8 +8,12 @@ PCA9685 로 조향 서보 / ESC 를 구동한다.
 - command_timeout 동안 명령이 없으면 스로틀 0 (안전 정지)
 """
 
+import os
+import signal
+
 import rclpy
 from rclpy.node import Node
+from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Bool
 
 from control_msgs.msg import Control
@@ -71,8 +75,21 @@ class ControlNode(Node):
         self.e_stop_active = False
         self.last_cmd_time = self.get_clock().now()
 
+        # 시작 즉시 중립 — 직전 프로세스가 강제종료로 남긴 폭주 PWM 을 덮어씀
+        if self.racer is not None:
+            self.racer.stop()
+
         self.create_subscription(Control, control_topic, self.control_callback, 10)
         self.create_subscription(Bool, '/e_stop', self.e_stop_callback, 10)
+
+        # 수동 조종 우선권: /control_manual 이 신선하면(manual_timeout 내) 자율 명령 무시
+        self.declare_parameter('manual_timeout', 0.4)
+        self.manual_timeout = float(self.get_parameter('manual_timeout').value)
+        self.last_manual_time = None
+        self.create_subscription(Control, '/control_manual', self.manual_callback, 10)
+
+        # ros2 param set 으로 트림/스로틀 상한 실시간 튜닝
+        self.add_on_set_parameters_callback(self.on_param_change)
 
         self.timer = self.create_timer(1.0 / command_hz, self.timer_callback)
 
@@ -103,19 +120,45 @@ class ControlNode(Node):
         self.racer.set_steering_percent(float(steering))
         self.racer.set_throttle_percent(throttle)
 
+    def _manual_active(self):
+        if self.last_manual_time is None:
+            return False
+        age = (self.get_clock().now() - self.last_manual_time).nanoseconds * 1e-9
+        return age < self.manual_timeout
+
     def control_callback(self, msg: Control):
         if self.e_stop_active:
+            return
+        if self._manual_active():   # 수동 조종 중에는 자율 명령 무시
             return
         self.steering = float(msg.steering) + self.steer_trim
         self.throttle = float(msg.throttle)
         self.last_cmd_time = self.get_clock().now()
 
+    def manual_callback(self, msg: Control):
+        if self.e_stop_active:      # E-STOP 은 수동보다도 우선
+            return
+        self.steering = float(msg.steering) + self.steer_trim
+        self.throttle = float(msg.throttle)
+        self.last_manual_time = self.get_clock().now()
+        self.last_cmd_time = self.last_manual_time
+
+    def on_param_change(self, params):
+        for p in params:
+            if p.name == 'steer_trim':
+                self.steer_trim = float(p.value)
+            elif p.name == 'max_throttle':
+                self.max_throttle = float(p.value)
+            self.get_logger().info(f'param updated: {p.name} = {p.value}')
+        return SetParametersResult(successful=True)
+
     def e_stop_callback(self, msg: Bool):
         if bool(msg.data):
             self.e_stop_active = True
             self.throttle = 0.0
+            self.steering = self.steer_trim   # 바퀴 자동 정렬 (직진 위치)
             self.apply_actuation(self.steering, 0.0)
-            self.get_logger().warning('E-STOP engaged. Ignoring throttle commands.')
+            self.get_logger().warning('E-STOP engaged. Steering aligned, throttle blocked.')
         else:
             if self.e_stop_active:
                 self.get_logger().info('E-STOP released.')
@@ -132,13 +175,36 @@ class ControlNode(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = ControlNode()
+
+    # SIGHUP(SSH 끊김)/SIGTERM(강제종료 1단계)에도 모터 중립을 보장하고 종료
+    # (기본 동작은 정리 코드 없이 즉사 → 마지막 PWM 이 남아 폭주)
+    def _neutral_and_exit(signum, frame):
+        try:
+            if node.racer is not None:
+                node.racer.stop()
+        finally:
+            os._exit(0)   # rclpy 대기 루프에 안 막히는 즉시 종료 (중립은 이미 기록됨)
+
+    signal.signal(signal.SIGHUP, _neutral_and_exit)
+    signal.signal(signal.SIGTERM, _neutral_and_exit)
+
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        # 종료 경로 어디서든 모터 중립 보장 (마지막 PWM 이 하드웨어에 남는 폭주 방지)
+        try:
+            if node.racer is not None:
+                node.racer.stop()
+        except Exception:
+            pass
+        try:
+            node.destroy_node()
+            if rclpy.ok():
+                rclpy.shutdown()
+        except Exception:
+            pass
 
 
 if __name__ == '__main__':

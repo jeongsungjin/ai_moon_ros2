@@ -17,6 +17,15 @@ class SlideWindow:
         self.right_fit = None
         self.x_previous = 320
 
+        # ---- 튜닝 파라미터 (lane 노드가 ROS 파라미터 sw_* 로 실시간 갱신) ----
+        self.margin = 60             # 추적 윈도우 좌우 반폭
+        self.win_h1 = 380            # 초기 탐색창 윗변 y (win_h2=480 고정)
+        self.win_half = 140          # 초기 탐색창 반폭 (145/495 중심 기준)
+        self.circle_height = 280     # 조향 기준점(빨간 점) y — 룩어헤드
+        self.road_width = 0.51       # 차선 폭 비율 (반대편 복사 거리)
+        self.nwindows = 20           # 추적 윈도우 개수
+        self.minpix = 0              # 윈도우 유효 최소 픽셀 (노이즈 문턱)
+
     def set_lane_side(self, side):
         if side in ("LEFT", "RIGHT"):
             self.lane_side = side
@@ -29,28 +38,28 @@ class SlideWindow:
         height, width = img.shape[0], img.shape[1]
 
         window_height = 20
-        nwindows = 22
+        nwindows = self.nwindows
         nonzero = img.nonzero()
         nonzeroy = np.array(nonzero[0])
         nonzerox = np.array(nonzero[1])
-        margin = 60
-        minpix = 0
+        margin = self.margin
+        minpix = self.minpix
         left_lane_inds = np.array([], dtype=int)
         right_lane_inds = np.array([], dtype=int)
 
-        # 초기 탐색 윈도우 (화면 하단)
-        win_h1 = 380
+        # 초기 탐색 윈도우 (화면 하단) — 값은 __init__ 의 튜닝 파라미터
+        win_h1 = self.win_h1
         win_h2 = 480
 
-        # 안쪽 경계를 285/355 로 물려 중앙에 70px 완충지대 확보
+        # 안쪽 경계를 물려 중앙에 완충지대 확보
         # (커브에서 왼쪽 차선이 중앙까지 넘어와도 오른쪽 박스가 잡아채지 않게)
-        win_l_w_l = 145 - 140
-        win_l_w_r = 145 + 140
-        win_r_w_l = 495 - 140
-        win_r_w_r = 495 + 140
+        win_l_w_l = 145 - self.win_half
+        win_l_w_r = 145 + self.win_half
+        win_r_w_l = 495 - self.win_half
+        win_r_w_r = 495 + self.win_half
 
-        circle_height = 270
-        road_width = 0.5
+        circle_height = self.circle_height
+        road_width = self.road_width
         half_road_width = 0.5 * road_width
 
         left_found = False

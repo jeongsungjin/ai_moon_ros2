@@ -16,6 +16,7 @@ flag 기반 우선순위로 MODE 를 결정한 뒤 해당 미션의 speed/angle 
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Float32, Int32, String
 
 from control_msgs.msg import Control
@@ -90,6 +91,9 @@ class MainPlannerNode(Node):
         self.white_cnt = 0
         self.motor_sum = 0.0
 
+        # ros2 param set 으로 게인류 실시간 튜닝
+        self.add_on_set_parameters_callback(self.on_param_change)
+
         loop_hz = float(self.get_parameter('loop_hz').value)
         self.timer = self.create_timer(1.0 / loop_hz, self.loop)
 
@@ -97,6 +101,19 @@ class MainPlannerNode(Node):
             f'main_planner started: control={self.control_topic}, '
             f'steering_gain={self.steering_gain}, throttle_gain={self.throttle_gain}'
         )
+
+    def on_param_change(self, params):
+        for p in params:
+            if p.name == 'steering_gain':
+                self.steering_gain = float(p.value)
+            elif p.name == 'throttle_gain':
+                self.throttle_gain = float(p.value)
+            elif p.name == 'invert_steering':
+                self.invert_steering = bool(p.value)
+            elif p.name == 'max_throttle':
+                self.max_throttle = float(p.value)
+            self.get_logger().info(f'param updated: {p.name} = {p.value}')
+        return SetParametersResult(successful=True)
 
     # ---------------- 콜백 ----------------
     def make_mission_callback(self, name):

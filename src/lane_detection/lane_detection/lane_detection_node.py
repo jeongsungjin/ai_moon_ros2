@@ -70,6 +70,20 @@ class LaneDetectionNode(Node):
         self.declare_parameter('hsv_red_lower', [145, 35, 35])
         self.declare_parameter('hsv_red_upper', [179, 255, 255])
 
+        # 슬라이딩윈도우 튜닝값 (slidewindow.py 의 동명 속성과 1:1, 실시간 반영)
+        self.declare_parameter('sw_margin', 60)
+        self.declare_parameter('sw_win_h1', 380)
+        self.declare_parameter('sw_win_half', 140)
+        self.declare_parameter('sw_circle_height', 280)
+        self.declare_parameter('sw_road_width', 0.51)
+        self.declare_parameter('sw_nwindows', 20)
+        self.declare_parameter('sw_minpix', 0)
+
+        # PID 게인 (use_pid: true 일 때 사용 — 직선 지그재그/커브 출렁임 억제용)
+        self.declare_parameter('pid_kp', 0.7)
+        self.declare_parameter('pid_ki', 0.0008)
+        self.declare_parameter('pid_kd', 0.15)
+
         # 구(2024) 대회 미션 — 새 대회 미션 확정 전까지 기본 OFF
         # 주의: 흰색이 차선 마스크에 포함되므로 enable_white_stop 을 켜려면
         #       차선 픽셀량과 겹치지 않게 white_pixel_threshold 재튜닝 필수
@@ -119,6 +133,8 @@ class LaneDetectionNode(Node):
         self.create_subscription(CompressedImage, image_topic, self.image_callback, image_qos)
         self.create_subscription(String, '/lane_topic', self.lane_topic_callback, 10)
         self.create_subscription(Bool, '/tunnel_done', self.tunnel_done_callback, 10)
+        # E-STOP 전환 시 PID 누적 리셋 (정지 중 쌓인 적분이 해제 순간 튀는 것 방지)
+        self.create_subscription(Bool, '/e_stop', self.e_stop_reset_callback, 10)
 
         self.ctrl_cmd_pub = self.create_publisher(DriveCommand, '/motor_lane', 1)
         self.white_cnt_pub = self.create_publisher(Int32, '/white_cnt', 1)
@@ -133,10 +149,18 @@ class LaneDetectionNode(Node):
 
         # ---------------- 상태 ----------------
         self.slidewindow = SlideWindow()
-        if self.version == 'fast':
-            self.pid = PID(0.78, 0.0005, 0.405)
-        else:
-            self.pid = PID(0.7, 0.0008, 0.15)
+        self.slidewindow.margin = int(self.get_parameter('sw_margin').value)
+        self.slidewindow.win_h1 = int(self.get_parameter('sw_win_h1').value)
+        self.slidewindow.win_half = int(self.get_parameter('sw_win_half').value)
+        self.slidewindow.circle_height = int(self.get_parameter('sw_circle_height').value)
+        self.slidewindow.road_width = float(self.get_parameter('sw_road_width').value)
+        self.slidewindow.nwindows = int(self.get_parameter('sw_nwindows').value)
+        self.slidewindow.minpix = int(self.get_parameter('sw_minpix').value)
+        self.pid = PID(
+            float(self.get_parameter('pid_kp').value),
+            float(self.get_parameter('pid_ki').value),
+            float(self.get_parameter('pid_kd').value),
+        )
 
         self.cv_image = None
         self.raw_image = None
@@ -182,6 +206,15 @@ class LaneDetectionNode(Node):
                 setattr(self, p.name, int(p.value))
             elif p.name in ('speed_safe', 'speed_fast', 'speed_red_zone'):
                 setattr(self, p.name, float(p.value))
+            elif p.name in ('sw_margin', 'sw_win_h1', 'sw_win_half', 'sw_circle_height',
+                            'sw_nwindows', 'sw_minpix'):
+                setattr(self.slidewindow, p.name[3:], int(p.value))
+            elif p.name == 'sw_road_width':
+                self.slidewindow.road_width = float(p.value)
+            elif p.name == 'use_pid':
+                self.use_pid = bool(p.value)
+            elif p.name in ('pid_kp', 'pid_ki', 'pid_kd'):
+                setattr(self.pid, p.name[4:], float(p.value))
             self.get_logger().info(f'param updated: {p.name} = {p.value}')
         return SetParametersResult(successful=True)
 
@@ -229,6 +262,12 @@ class LaneDetectionNode(Node):
             self.lane_state = msg.data
         self.slidewindow.set_lane_side(msg.data)
         self.get_logger().info(f'Current lane state: {self.lane_state}')
+
+    def e_stop_reset_callback(self, msg: Bool):
+        # 걸릴 때/풀릴 때 모두 리셋 — 어느 쪽이든 누적은 무효
+        self.pid.p_error = 0.0
+        self.pid.i_error = 0.0
+        self.pid.d_error = 0.0
 
     def tunnel_done_callback(self, msg: Bool):
         self.tunnel_done_flag = msg.data

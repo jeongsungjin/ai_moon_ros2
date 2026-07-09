@@ -23,7 +23,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument(
-            'use_cv_detect', default_value='true',
+            # 새 대회에 표지판/라바콘 미션 없음 — 기본 OFF (CPU ~0.6코어 절약, 필요시 true)
+            'use_cv_detect', default_value='false',
             description='표지판/라바콘 검출 노드 실행 여부',
         ),
         DeclareLaunchArgument(
