@@ -47,7 +47,6 @@ class LaneDetectionNode(Node):
         self.declare_parameter('version', 'safe')            # 'safe' | 'fast'
         self.declare_parameter('speed_safe', 0.45)
         self.declare_parameter('speed_fast', 0.5)
-        self.declare_parameter('speed_red_zone', 0.2)         # 빨간 구간 감속
         self.declare_parameter('use_pid', False)              # 원본은 raw 오차 사용
         self.declare_parameter('publish_debug_image', True)
         # 모니터/VNC 연결 시 imshow + HSV 트랙바 표시 (헤드리스 SSH 에서는 false 유지)
@@ -58,17 +57,14 @@ class LaneDetectionNode(Node):
         self.declare_parameter('lane_use_orange', True)
         self.declare_parameter('lane_use_yellow', False)   # 구 트랙(노란 차선) 호환용
 
-        # HSV 범위 (원본 튜닝값 그대로 기본값)
+        # HSV 범위
+        # (빨간 바닥 검출은 cv_detect/red_zone_node 로 분리 — 여기는 차선 색만)
         self.declare_parameter('hsv_yellow_lower', [10, 108, 125])
         self.declare_parameter('hsv_yellow_upper', [35, 255, 255])
-        self.declare_parameter('hsv_left_yellow_lower', [15, 80, 90])
-        self.declare_parameter('hsv_left_yellow_upper', [30, 255, 235])
         self.declare_parameter('hsv_orange_lower', [5, 80, 80])
         self.declare_parameter('hsv_orange_upper', [25, 255, 255])
         self.declare_parameter('hsv_white_lower', [30, 0, 151])
         self.declare_parameter('hsv_white_upper', [122, 67, 207])
-        self.declare_parameter('hsv_red_lower', [145, 35, 35])
-        self.declare_parameter('hsv_red_upper', [179, 255, 255])
 
         # 슬라이딩윈도우 튜닝값 (slidewindow.py 의 동명 속성과 1:1, 실시간 반영)
         self.declare_parameter('sw_margin', 60)
@@ -84,19 +80,9 @@ class LaneDetectionNode(Node):
         self.declare_parameter('pid_ki', 0.0008)
         self.declare_parameter('pid_kd', 0.15)
 
-        # 구(2024) 대회 미션 — 새 대회 미션 확정 전까지 기본 OFF
-        # 주의: 흰색이 차선 마스크에 포함되므로 enable_white_stop 을 켜려면
-        #       차선 픽셀량과 겹치지 않게 white_pixel_threshold 재튜닝 필수
-        self.declare_parameter('enable_red_slowdown', False)
-        self.declare_parameter('enable_white_stop', False)
-        self.declare_parameter('red_pixel_threshold', 30000)
-        self.declare_parameter('white_pixel_threshold', 35000)
-        self.declare_parameter('white_stop_max_count', 190)
-
         self.version = str(self.get_parameter('version').value)
         self.speed_safe = float(self.get_parameter('speed_safe').value)
         self.speed_fast = float(self.get_parameter('speed_fast').value)
-        self.speed_red_zone = float(self.get_parameter('speed_red_zone').value)
         self.use_pid = bool(self.get_parameter('use_pid').value)
         self.publish_debug_image = bool(self.get_parameter('publish_debug_image').value)
         self.show_gui = bool(self.get_parameter('show_gui').value)
@@ -107,20 +93,10 @@ class LaneDetectionNode(Node):
 
         self.lower_yellow = np.array(self.get_parameter('hsv_yellow_lower').value)
         self.upper_yellow = np.array(self.get_parameter('hsv_yellow_upper').value)
-        self.lower_left_yellow = np.array(self.get_parameter('hsv_left_yellow_lower').value)
-        self.upper_left_yellow = np.array(self.get_parameter('hsv_left_yellow_upper').value)
         self.lower_orange = np.array(self.get_parameter('hsv_orange_lower').value)
         self.upper_orange = np.array(self.get_parameter('hsv_orange_upper').value)
         self.lower_white = np.array(self.get_parameter('hsv_white_lower').value)
         self.upper_white = np.array(self.get_parameter('hsv_white_upper').value)
-        self.lower_red = np.array(self.get_parameter('hsv_red_lower').value)
-        self.upper_red = np.array(self.get_parameter('hsv_red_upper').value)
-
-        self.enable_red_slowdown = bool(self.get_parameter('enable_red_slowdown').value)
-        self.enable_white_stop = bool(self.get_parameter('enable_white_stop').value)
-        self.red_pixel_threshold = int(self.get_parameter('red_pixel_threshold').value)
-        self.white_pixel_threshold = int(self.get_parameter('white_pixel_threshold').value)
-        self.white_stop_max_count = int(self.get_parameter('white_stop_max_count').value)
 
         # ---------------- 통신 ----------------
         image_qos = QoSProfile(
@@ -132,15 +108,13 @@ class LaneDetectionNode(Node):
         image_topic = str(self.get_parameter('image_topic').value)
         self.create_subscription(CompressedImage, image_topic, self.image_callback, image_qos)
         self.create_subscription(String, '/lane_topic', self.lane_topic_callback, 10)
-        self.create_subscription(Bool, '/tunnel_done', self.tunnel_done_callback, 10)
         # E-STOP 전환 시 PID 누적 리셋 (정지 중 쌓인 적분이 해제 순간 튀는 것 방지)
         self.create_subscription(Bool, '/e_stop', self.e_stop_reset_callback, 10)
 
         self.ctrl_cmd_pub = self.create_publisher(DriveCommand, '/motor_lane', 1)
-        self.white_cnt_pub = self.create_publisher(Int32, '/white_cnt', 1)
-        self.yellow_pixel_pub = self.create_publisher(Int32, '/yellow_pixel', 1)
         self.white_pixel_pub = self.create_publisher(Int32, '/white_pixels', 1)
-        self.red_pixel_pub = self.create_publisher(Int32, '/red_pixels', 1)
+        # 주황 픽셀 수 — 회전교차로 미션의 진입(arm) 신호로 사용
+        self.orange_pixel_pub = self.create_publisher(Int32, '/orange_pixels', 1)
         self.x_location_pub = self.create_publisher(Float32, '/lane_x_location', 1)
         if self.publish_debug_image:
             self.debug_image_pub = self.create_publisher(
@@ -166,10 +140,6 @@ class LaneDetectionNode(Node):
         self.raw_image = None
         self.steer = 0.0
         self.motor = self.speed_safe
-        self.white_count = 0
-        self.stop_count = 0
-        self.after_white = False
-        self.tunnel_done_flag = False
         self.lane_state = None
 
         if self.show_gui:
@@ -191,20 +161,15 @@ class LaneDetectionNode(Node):
         """ros2 param set 으로 HSV/색 선택/임계값을 재시작 없이 튜닝."""
         hsv_map = {
             'hsv_yellow_lower': 'lower_yellow', 'hsv_yellow_upper': 'upper_yellow',
-            'hsv_left_yellow_lower': 'lower_left_yellow', 'hsv_left_yellow_upper': 'upper_left_yellow',
             'hsv_orange_lower': 'lower_orange', 'hsv_orange_upper': 'upper_orange',
             'hsv_white_lower': 'lower_white', 'hsv_white_upper': 'upper_white',
-            'hsv_red_lower': 'lower_red', 'hsv_red_upper': 'upper_red',
         }
         for p in params:
             if p.name in hsv_map:
                 setattr(self, hsv_map[p.name], np.array(p.value))
-            elif p.name in ('lane_use_white', 'lane_use_orange', 'lane_use_yellow',
-                            'enable_red_slowdown', 'enable_white_stop'):
+            elif p.name in ('lane_use_white', 'lane_use_orange', 'lane_use_yellow'):
                 setattr(self, p.name, bool(p.value))
-            elif p.name in ('red_pixel_threshold', 'white_pixel_threshold'):
-                setattr(self, p.name, int(p.value))
-            elif p.name in ('speed_safe', 'speed_fast', 'speed_red_zone'):
+            elif p.name in ('speed_safe', 'speed_fast'):
                 setattr(self, p.name, float(p.value))
             elif p.name in ('sw_margin', 'sw_win_h1', 'sw_win_half', 'sw_circle_height',
                             'sw_nwindows', 'sw_minpix'):
@@ -230,8 +195,6 @@ class LaneDetectionNode(Node):
                 ('Orange Upper H', self.upper_orange[0], 179), ('Orange Upper S', self.upper_orange[1], 255), ('Orange Upper V', self.upper_orange[2], 255),
                 ('White Lower H', self.lower_white[0], 179), ('White Lower S', self.lower_white[1], 255), ('White Lower V', self.lower_white[2], 255),
                 ('White Upper H', self.upper_white[0], 179), ('White Upper S', self.upper_white[1], 255), ('White Upper V', self.upper_white[2], 255),
-                ('Red Lower H', self.lower_red[0], 179), ('Red Lower S', self.lower_red[1], 255), ('Red Lower V', self.lower_red[2], 255),
-                ('Red Upper H', self.upper_red[0], 179), ('Red Upper S', self.upper_red[1], 255), ('Red Upper V', self.upper_red[2], 255),
             ]
             for name, init, maxval in bars:
                 cv2.createTrackbar(name, 'Trackbars', int(init), maxval, lambda x: None)
@@ -248,8 +211,6 @@ class LaneDetectionNode(Node):
         self.upper_orange = np.array([g('Orange Upper H'), g('Orange Upper S'), g('Orange Upper V')])
         self.lower_white = np.array([g('White Lower H'), g('White Lower S'), g('White Lower V')])
         self.upper_white = np.array([g('White Upper H'), g('White Upper S'), g('White Upper V')])
-        self.lower_red = np.array([g('Red Lower H'), g('Red Lower S'), g('Red Lower V')])
-        self.upper_red = np.array([g('Red Upper H'), g('Red Upper S'), g('Red Upper V')])
 
     # ---------------- 콜백 ----------------
     def image_callback(self, msg: CompressedImage):
@@ -268,9 +229,6 @@ class LaneDetectionNode(Node):
         self.pid.p_error = 0.0
         self.pid.i_error = 0.0
         self.pid.d_error = 0.0
-
-    def tunnel_done_callback(self, msg: Bool):
-        self.tunnel_done_flag = msg.data
 
     # ---------------- 메인 처리 (원본 run() 루프) ----------------
     def process(self):
@@ -295,14 +253,10 @@ class LaneDetectionNode(Node):
         img_hsv = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2HSV)
 
         # 색상별 마스크
-        if not self.tunnel_done_flag:
-            mask_yellow = cv2.inRange(img_hsv, self.lower_yellow, self.upper_yellow)
-        else:
-            mask_yellow = cv2.inRange(img_hsv, self.lower_left_yellow, self.upper_left_yellow)
-
         mask_orange = cv2.inRange(img_hsv, self.lower_orange, self.upper_orange)
         mask_white = cv2.inRange(img_hsv, self.lower_white, self.upper_white)
-        mask_red = cv2.inRange(img_hsv, self.lower_red, self.upper_red)
+        mask_yellow = (cv2.inRange(img_hsv, self.lower_yellow, self.upper_yellow)
+                       if self.lane_use_yellow else None)
 
         # 차선 마스크 합성: 활성화된 색상들의 OR (새 트랙 = 흰색 + 주황)
         # (기존 코드는 노란색만 슬라이딩윈도우에 들어갔음 — 흰색은 정지선 카운트 전용이었음)
@@ -311,7 +265,7 @@ class LaneDetectionNode(Node):
             mask_lane = cv2.bitwise_or(mask_lane, mask_white)
         if self.lane_use_orange:
             mask_lane = cv2.bitwise_or(mask_lane, mask_orange)
-        if self.lane_use_yellow:
+        if self.lane_use_yellow and mask_yellow is not None:
             mask_lane = cv2.bitwise_or(mask_lane, mask_yellow)
 
         # 컬러 필터 이미지는 GUI 표시용으로만 필요 (와핑 입력으로는 미사용)
@@ -339,15 +293,10 @@ class LaneDetectionNode(Node):
         # (기존: 3채널 컬러 와핑 + cvtColor + 미사용 yellow 와핑 → 10fps CPU 병목이라 제거)
         warped_lane = cv2.warpPerspective(mask_lane, matrix, (640, 480))
 
-        # 미션용 와핑은 해당 미션이 켜진 경우에만 수행
-        warped_img_red = (cv2.warpPerspective(mask_red, matrix, (640, 480))
-                          if self.enable_red_slowdown else None)
-        warped_img_white = (cv2.warpPerspective(mask_white, matrix, (640, 480))
-                            if self.enable_white_stop else None)
-
-        # 픽셀 모니터링: 와핑 전 마스크 기준 (구독 노드 없음 — 수치 스케일만 달라짐)
-        self.yellow_pixel_pub.publish(Int32(data=int(np.count_nonzero(mask_yellow))))
-        self.red_pixel_pub.publish(Int32(data=int(np.count_nonzero(mask_red))))
+        # 픽셀 모니터링: 와핑 전 마스크 기준
+        # /orange_pixels 는 회전교차로 미션의 진입 신호로도 쓰임
+        self.orange_pixel_pub.publish(Int32(data=int(np.count_nonzero(mask_orange))))
+        self.white_pixel_pub.publish(Int32(data=int(np.count_nonzero(mask_white))))
 
         # 이진화 + 슬라이딩 윈도우
         bin_img = np.zeros_like(warped_lane)
@@ -362,27 +311,6 @@ class LaneDetectionNode(Node):
 
         self.motor = self.speed_fast if self.version == 'fast' else self.speed_safe
 
-        # (구 대회 미션) 빨간색 차로 구간 감속 — enable_red_slowdown 으로 게이트
-        if (self.enable_red_slowdown
-                and np.count_nonzero(warped_img_red) > self.red_pixel_threshold):
-            self.motor = self.speed_red_zone
-
-        # (구 대회 미션) 흰색 횡단보도 구간 정지 — enable_white_stop 으로 게이트
-        # ⚠️ 흰색이 차선 마스크에 포함된 상태에서는 차선 픽셀만으로 오발동 가능
-        elif (self.enable_white_stop
-              and self.stop_count < self.white_stop_max_count
-              and np.count_nonzero(warped_img_white) > self.white_pixel_threshold):
-            self.motor = 0.0
-            self.stop_count += 1
-            self.after_white = True
-
-        if self.after_white:
-            self.white_count += 1
-            self.white_cnt_pub.publish(Int32(data=self.white_count))
-
-        white_src = warped_img_white if warped_img_white is not None else mask_white
-        self.white_pixel_pub.publish(Int32(data=int(np.count_nonzero(white_src))))
-
         self.publish_ctrl_cmd(self.motor, self.steer)
 
         # GUI 모드: 원본에서 주석 처리돼 있던 imshow 복원
@@ -391,11 +319,8 @@ class LaneDetectionNode(Node):
             cv2.imshow('Lane Mask (combined)', filtered_img)
             cv2.imshow('Orange Mask', cv2.bitwise_and(frame_resized, frame_resized, mask=mask_orange))
             cv2.imshow('White Mask', cv2.bitwise_and(frame_resized, frame_resized, mask=mask_white))
-            cv2.imshow('Red Mask', cv2.bitwise_and(frame_resized, frame_resized, mask=mask_red))
             cv2.imshow('Warped Image', warped_lane)
             cv2.imshow('Output Image', out_img)
-            if warped_img_white is not None:
-                cv2.imshow('Warped White Stop Line', warped_img_white)
             cv2.waitKey(1)
 
         if self.publish_debug_image:

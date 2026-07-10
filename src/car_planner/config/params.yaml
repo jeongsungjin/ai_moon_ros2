@@ -18,7 +18,6 @@ lane_detection_node:
     version: safe             # 'safe' | 'fast'
     speed_safe: 0.20
     speed_fast: 0.5
-    speed_red_zone: 0.2
     use_pid: false
     publish_debug_image: true
     show_gui: false           # 모니터/VNC 연결 시 true → imshow + HSV 트랙바
@@ -44,37 +43,56 @@ lane_detection_node:
     hsv_orange_upper: [25, 255, 255]
     hsv_yellow_lower: [20, 110, 110]
     hsv_yellow_upper: [35, 255, 255]
-    hsv_left_yellow_lower: [20, 110, 110]
-    hsv_left_yellow_upper: [35, 255, 255]
     hsv_white_lower: [0, 0, 188]
     hsv_white_upper: [179, 20, 255]
-    hsv_red_lower: [145, 35, 35]
-    hsv_red_upper: [179, 255, 255]
 
-    # 구(2024) 대회 미션 — 새 대회 미션 확정 전까지 OFF 유지
-    # (흰색이 차선 마스크에 포함되므로 white_stop 켜려면 임계값 재튜닝 필수)
-    enable_red_slowdown: false
-    enable_white_stop: false
-    red_pixel_threshold: 30000
-    white_pixel_threshold: 35000
-    white_stop_max_count: 190
+# ---------------- 인지 (SEA:ME 미션용) ----------------
 
-parking_sign_node:
+aruco_detect_node:
   ros__parameters:
     image_topic: /camera/image/compressed
-    hsv_blue_lower: [100, 50, 50]
-    hsv_blue_upper: [130, 255, 255]
-    blue_pixel_threshold: 1000
-    roi: [270, 331, 325, 640]
-    require_tunnel_done: false   # 터널 미션 없으면 false
-    tunnel_pass_frames: 240
+    process_hz: 15.0
+    aruco_dict: DICT_4X4_50      # 대회 마커 사전 정보 확인 후 확정!
+    min_marker_height_px: 20     # 반응 거리 (작으면 멀리서도 반응)
+    publish_debug_image: true
 
-rubbercone_node:
+red_zone_node:
   ros__parameters:
     image_topic: /camera/image/compressed
-    hsv_orange_lower: [0, 41, 223]
-    hsv_orange_upper: [66, 255, 255]
-    orange_pixel_threshold: 10000
+    process_hz: 15.0
+    roi: [240, 480, 0, 640]      # 바닥이 보이는 하단부 (640x480 기준)
+    hsv_red1_lower: [0, 80, 60]  # 빨강 low-hue 구간
+    hsv_red1_upper: [10, 255, 255]
+    hsv_red2_lower: [160, 80, 60]  # 빨강 high-hue 구간
+    hsv_red2_upper: [179, 255, 255]
+    on_pixel_threshold: 4000     # 이상이면 is_red=true
+    off_pixel_threshold: 1500    # 미만이면 is_red=false (히스테리시스)
+    publish_debug_image: true
+
+# ---------------- 미션 ----------------
+
+traffic_light_mission:
+  ros__parameters:
+    publish_hz: 30.0
+    green_stable_frames: 3       # green 연속 N프레임 → 출발
+    red_stable_frames: 5         # red 연속 N프레임 → 도착 정지
+    min_drive_time_sec: 20.0     # 출발 후 이 시간 동안 red 무시 (1랩보다 짧게, 실측 조정)
+
+roundabout_mission:
+  ros__parameters:
+    enabled: false               # ⚠️ 현장에서 entry/loop/exit 튜닝 후 true
+    publish_hz: 30.0
+    entry_min_sec: 3.0           # 출발 후 이 시간 전엔 진입 감시 안 함
+    entry_max_sec: 15.0          # 도달 시 orange 무관 강제 진입 (시간 기반 fallback)
+    use_orange_arm: true
+    orange_arm_threshold: 8000   # /orange_pixels 진입 임계 (실측!)
+    loop_done_mode: both         # 'time' | 'steer' | 'both'
+    loop_sec: 8.0                # 1회전 소요 시간 (실측!)
+    steer_integral_target: 3.0   # |조향%| 적분 목표 (실측! /roundabout/steer_integral 관찰)
+    exit_angle: -100.0           # 탈출 조향 (angle 단위 ≈ -0.29 steering, 부호=방향)
+    exit_speed: 0.2
+    exit_duration_sec: 1.2
+    track_reverse: false         # 역방향 트랙 배정 시 true (회전/탈출 방향 반전)
 
 main_planner:
   ros__parameters:
@@ -84,7 +102,6 @@ main_planner:
     invert_steering: false
     throttle_gain: 1.0        # speed(0.2~0.5) -> throttle percent
     max_throttle: 0.6
-    white_cnt_threshold: 220
 
 control_node:
   ros__parameters:

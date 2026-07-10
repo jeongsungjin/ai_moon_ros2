@@ -17,7 +17,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rcl_interfaces.msg import SetParametersResult
-from std_msgs.msg import Float32, Int32, String
+from std_msgs.msg import String
 
 from control_msgs.msg import Control
 from drive_msgs.msg import DriveCommand
@@ -57,15 +57,12 @@ class MainPlannerNode(Node):
         # 스로틀 변환: 원본 speed(0.2~0.5) -> percent
         self.declare_parameter('throttle_gain', 1.0)
         self.declare_parameter('max_throttle', 0.6)
-        # 완주 판정용 모터 합산 (원본 white_cnt 로직 유지)
-        self.declare_parameter('white_cnt_threshold', 220)
 
         self.control_topic = str(self.get_parameter('control_topic').value)
         self.steering_gain = float(self.get_parameter('steering_gain').value)
         self.invert_steering = bool(self.get_parameter('invert_steering').value)
         self.throttle_gain = float(self.get_parameter('throttle_gain').value)
         self.max_throttle = float(self.get_parameter('max_throttle').value)
-        self.white_cnt_threshold = int(self.get_parameter('white_cnt_threshold').value)
 
         # 미션 명령 저장소
         self.ctrl_lane = MissionCommand()
@@ -78,18 +75,14 @@ class MainPlannerNode(Node):
             self.create_subscription(
                 DriveCommand, topic, self.make_mission_callback(name), 10
             )
-        self.create_subscription(Int32, '/white_cnt', self.white_cnt_callback, 10)
 
         # 발행
         self.control_pub = self.create_publisher(Control, self.control_topic, 10)
         self.mode_pub = self.create_publisher(String, '/mode', 10)
-        self.motor_sum_pub = self.create_publisher(Float32, '/sum_of_motor', 10)
 
         self.mode = 'LANE'
         self.motor = 0.0
         self.steer = 0.0
-        self.white_cnt = 0
-        self.motor_sum = 0.0
 
         # ros2 param set 으로 게인류 실시간 튜닝
         self.add_on_set_parameters_callback(self.on_param_change)
@@ -129,9 +122,6 @@ class MainPlannerNode(Node):
         self.ctrl_lane.angle = msg.angle
         self.ctrl_lane.flag = msg.flag
 
-    def white_cnt_callback(self, msg: Int32):
-        self.white_cnt = msg.data
-
     # ---------------- 메인 루프 ----------------
     def loop(self):
         # MODE 판별: flag 가 켜진 최고 우선순위 미션
@@ -147,13 +137,6 @@ class MainPlannerNode(Node):
 
         self.motor = selected.speed
         self.steer = selected.angle
-
-        # 완주(횡단보도 정지) 이후 모터 합산 (원본 로직 유지)
-        if self.white_cnt >= self.white_cnt_threshold:
-            self.motor_sum += self.motor
-            self.motor_sum_pub.publish(Float32(data=float(self.motor_sum)))
-        else:
-            self.motor_sum_pub.publish(Float32(data=0.0))
 
         self.get_logger().info(
             f'MODE: {self.mode} | SPEED: {self.motor:.2f} | STEER: {self.steer:.1f}',

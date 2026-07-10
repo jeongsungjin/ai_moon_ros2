@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'cv_detect'
+package_name = 'missions'
 
 setup(
     name=package_name,
@@ -14,12 +14,12 @@ setup(
     zip_safe=True,
     maintainer='seongjin',
     maintainer_email='smoony0226ai@kookmin.ac.kr',
-    description='Color-based sign/object detectors (migrated from ROS1 cv_detect)',
+    description='SEA:ME hackathon mission nodes (traffic light, roundabout, dynamic obstacle)',
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
-            'aruco_detect_node = cv_detect.aruco_detect_node:main',
-            'red_zone_node = cv_detect.red_zone_node:main',
+            'traffic_light_mission_node = missions.traffic_light_mission_node:main',
+            'roundabout_mission_node = missions.roundabout_mission_node:main',
         ],
     },
 )

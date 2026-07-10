@@ -26,7 +26,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 
 class YoloDetectNode(Node):
@@ -90,6 +90,11 @@ class YoloDetectNode(Node):
         )
         self.create_subscription(CompressedImage, image_topic, self.image_callback, image_qos)
         self.detect_pub = self.create_publisher(String, detect_topic, 10)
+        # 클래스별 프레임 단위 Bool (게이트 통과 시 true) — 미션 노드가 직접 debounce
+        self.class_bool_pubs = {
+            name: self.create_publisher(Bool, f'/yolo/{name}', 10)
+            for name in self.class_names.values()
+        }
         if self.publish_debug_image:
             self.debug_pub = self.create_publisher(
                 CompressedImage, '/yolo/image/debug', image_qos
@@ -132,6 +137,7 @@ class YoloDetectNode(Node):
         # 크기 조건을 통과한 검출 중 최고 confidence 클래스 선택
         best_cls = None
         best_conf = 0.0
+        present = {name: False for name in self.class_names.values()}  # 이번 프레임 검출 여부
         boxes = result.boxes
         if boxes is not None and len(boxes) > 0:
             for i in range(len(boxes)):
@@ -140,9 +146,14 @@ class YoloDetectNode(Node):
                 cls_id = int(boxes.cls[i])
                 if (y2 - y1) < self.min_box_height_px:
                     continue  # 너무 멀리 있음 (작은 박스) → 무시
+                present[self.class_names[cls_id]] = True
                 if conf > best_conf:
                     best_conf = conf
                     best_cls = self.class_names[cls_id]
+
+        # 클래스별 Bool 발행 (미션 노드용 — 프레임 단위, debounce 없음)
+        for name, pub in self.class_bool_pubs.items():
+            pub.publish(Bool(data=present[name]))
 
         # 연속 검출 debounce 후 발행
         if best_cls is not None:
