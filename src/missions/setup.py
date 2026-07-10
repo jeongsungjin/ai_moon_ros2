@@ -20,6 +20,7 @@ setup(
         'console_scripts': [
             'traffic_light_mission_node = missions.traffic_light_mission_node:main',
             'roundabout_mission_node = missions.roundabout_mission_node:main',
+            'dynamic_obs_mission_node = missions.dynamic_obs_mission_node:main',
         ],
     },
 )

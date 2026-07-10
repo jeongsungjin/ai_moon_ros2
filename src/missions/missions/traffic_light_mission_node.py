@@ -32,6 +32,9 @@ class TrafficLightMissionNode(Node):
     def __init__(self):
         super().__init__('traffic_light_mission')
 
+        # enabled=false → 신호등 미션 비활성 (YOLO 없이 테스트 주행할 때).
+        # 비활성 시 항상 flag=False + 상태 'DRIVING' 발행 (회전교차로 타이머는 launch 시점부터)
+        self.declare_parameter('enabled', True)
         self.declare_parameter('publish_hz', 30.0)
         self.declare_parameter('green_stable_frames', 3)   # green 연속 N프레임 → 출발
         self.declare_parameter('red_stable_frames', 5)     # red 연속 N프레임 → 정지
@@ -39,6 +42,7 @@ class TrafficLightMissionNode(Node):
         # 트랙 1랩 예상 시간보다 확실히 짧게, 출발 신호등을 벗어날 시간보다 길게.
         self.declare_parameter('min_drive_time_sec', 20.0)
 
+        self.enabled = bool(self.get_parameter('enabled').value)
         publish_hz = float(self.get_parameter('publish_hz').value)
         self.green_stable_frames = int(self.get_parameter('green_stable_frames').value)
         self.red_stable_frames = int(self.get_parameter('red_stable_frames').value)
@@ -50,7 +54,8 @@ class TrafficLightMissionNode(Node):
         self.cmd_pub = self.create_publisher(DriveCommand, '/motor_sign', 10)
         self.state_pub = self.create_publisher(String, '/mission/traffic_state', 10)
 
-        self.state = WAIT_GREEN
+        # 비활성 모드면 처음부터 DRIVING (정지 없이 주행 허용)
+        self.state = DRIVING if not self.enabled else WAIT_GREEN
         self.green_count = 0
         self.red_count = 0
         self.drive_start_time = None
@@ -58,14 +63,14 @@ class TrafficLightMissionNode(Node):
         self.timer = self.create_timer(1.0 / publish_hz, self.loop)
 
         self.get_logger().info(
-            f'traffic_light_mission started: state={self.state}, '
+            f'traffic_light_mission started: enabled={self.enabled}, state={self.state}, '
             f'green_stable={self.green_stable_frames}, red_stable={self.red_stable_frames}, '
             f'min_drive_time={self.min_drive_time_sec}s'
         )
 
     # ---------------- 인지 콜백 (연속 카운트만 갱신) ----------------
     def green_callback(self, msg: Bool):
-        if self.state != WAIT_GREEN:
+        if not self.enabled or self.state != WAIT_GREEN:
             return
         self.green_count = self.green_count + 1 if msg.data else 0
         if self.green_count >= self.green_stable_frames:
@@ -74,7 +79,7 @@ class TrafficLightMissionNode(Node):
             self.get_logger().info('GREEN LIGHT — GO! (control released to lane driving)')
 
     def red_callback(self, msg: Bool):
-        if self.state != DRIVING:
+        if not self.enabled or self.state != DRIVING:
             return
         # 출발 직후 red 무시 구간
         if self.drive_start_time is not None:
@@ -89,6 +94,12 @@ class TrafficLightMissionNode(Node):
     # ---------------- 발행 루프 ----------------
     def loop(self):
         cmd = DriveCommand()
+        if not self.enabled:
+            # 미션 비활성: 절대 제어권을 잡지 않음 (테스트 주행용)
+            cmd.flag = False
+            self.cmd_pub.publish(cmd)
+            self.state_pub.publish(String(data=DRIVING))
+            return
         if self.state == WAIT_GREEN or self.state == FINISH:
             cmd.speed = 0.0
             cmd.angle = 0.0

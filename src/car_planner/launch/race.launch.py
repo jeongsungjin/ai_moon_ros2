@@ -26,6 +26,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -44,7 +45,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'use_yolo', default_value='true',
-            description='YOLO 인지 노드 실행 여부 (모델 파일 없으면 false)',
+            description='YOLO 인지 실행 여부. false 면 신호등 미션도 자동 비활성 '
+                        '(green 대기 없이 바로 주행 — 테스트용)',
         ),
         DeclareLaunchArgument(
             'use_web_viewer', default_value='true',
@@ -79,11 +81,20 @@ def generate_launch_description():
         # ---------------- 미션 ----------------
         Node(
             package='missions', executable='traffic_light_mission_node',
-            name='traffic_light_mission', output='screen', parameters=[params_file],
+            name='traffic_light_mission', output='screen',
+            parameters=[
+                params_file,
+                # use_yolo:=false 면 green 대기 없이 바로 주행 (테스트용)
+                {'enabled': ParameterValue(use_yolo, value_type=bool)},
+            ],
         ),
         Node(
             package='missions', executable='roundabout_mission_node',
             name='roundabout_mission', output='screen', parameters=[params_file],
+        ),
+        Node(
+            package='missions', executable='dynamic_obs_mission_node',
+            name='dynamic_obs_mission', output='screen', parameters=[params_file],
         ),
 
         # ---------------- 판단/제어 ----------------
