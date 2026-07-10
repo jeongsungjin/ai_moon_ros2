@@ -18,8 +18,8 @@ setup(
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
-            'parking_sign_node = cv_detect.parking_sign_node:main',
-            'rubbercone_node = cv_detect.rubbercone_node:main',
+            'aruco_detect_node = cv_detect.aruco_detect_node:main',
+            'red_zone_node = cv_detect.red_zone_node:main',
         ],
     },
 )

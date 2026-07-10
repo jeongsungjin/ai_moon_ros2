@@ -27,7 +27,7 @@ from rclpy.qos import (
 from rcl_interfaces.srv import GetParameters
 from rcl_interfaces.msg import ParameterType
 from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import Bool, Float32, String
+from std_msgs.msg import Bool, Float32, Int32, String
 
 BOUNDARY = 'frame'
 
@@ -104,6 +104,21 @@ GUIDE_HTML = """
 확정값은 mtune 종료 YAML → params.yaml 반영.</p>
 """
 
+# 레이스 모니터 바: 미션/인지 상태 토픽 실시간 표시 (label, topic, 타입)
+RACE_TOPICS = [
+    ('MODE', '/mode', String),
+    ('신호등', '/mission/traffic_state', String),
+    ('교차로', '/mission/roundabout_state', String),
+    ('장애물', '/mission/dynamic_state', String),
+    ('YOLO', '/traffic_sign', String),
+    ('아루코', '/aruco/visible', Bool),
+    ('아루코ID', '/aruco/id', Int32),
+    ('빨간구간', '/is_red', Bool),
+    ('노랑px', '/yellow_pixels', Int32),
+    ('조향적분', '/roundabout/steer_integral', Float32),
+    ('차선중심', '/lane_x_location', Float32),
+]
+
 # 상태 바에 표시할 주요 파라미터 — 순서 = param_tuner 십자키 순서 = 가이드 순서
 STATUS_PARAMS = [
     ('트림',     '/control_node',        'steer_trim'),
@@ -165,6 +180,14 @@ class WebViewerNode(Node):
                     GetParameters, f'{node_name}/get_parameters')
         self.create_subscription(Bool, '/e_stop', self._on_estop, 10)
         self.create_subscription(Float32, '/battery/percent', self._on_battery, 10)
+
+        # ---- 레이스 모니터: 미션/인지 토픽 실시간 수집 ----
+        self.race = {}          # label -> (value, 수신시각 sec)
+        for label, topic, msg_type in RACE_TOPICS:
+            self.create_subscription(
+                msg_type, topic,
+                lambda msg, lb=label: self._on_race(lb, msg), 10,
+            )
         # 튜너의 현재 선택 파라미터 (latched 발행에 맞춘 QoS)
         self.selected_label = None
         self._label_by_param = {p: label for label, _, p in STATUS_PARAMS}
@@ -185,6 +208,15 @@ class WebViewerNode(Node):
         with self.cond:
             self.latest[topic] = bytes(msg.data)
             self.cond.notify_all()
+
+    def _on_race(self, label, msg):
+        v = msg.data
+        if isinstance(v, bool):
+            v = '●' if v else '—'
+        elif isinstance(v, float):
+            v = round(v, 1)
+        now = self.get_clock().now().nanoseconds * 1e-9
+        self.race[label] = (v, now)
 
     def _on_estop(self, msg):
         self.estop = bool(msg.data)
@@ -241,11 +273,21 @@ def make_handler(node: WebViewerNode):
             self.send_error(404)
 
         def _serve_status(self):
+            # 레이스 토픽: 3초 이상 미수신이면 stale 표시
+            now = node.get_clock().now().nanoseconds * 1e-9
+            race = {}
+            for label, _, _ in RACE_TOPICS:
+                if label in node.race:
+                    v, t = node.race[label]
+                    race[label] = {'v': v, 'stale': (now - t) > 3.0}
+                else:
+                    race[label] = {'v': '?', 'stale': True}
             body = json.dumps({
                 'params': node.status,
                 'estop': node.estop,
                 'battery': node.battery,
                 'selected': node.selected_label,
+                'race': race,
             }).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
@@ -259,11 +301,27 @@ def make_handler(node: WebViewerNode):
                 for t in node.latest
             )
             status_bar = (
-                '<div id="bar" style="position:sticky;top:0;background:#111;'
+                '<div id="race" style="position:sticky;top:0;background:#001a00;'
+                'padding:8px;font-family:monospace;font-size:15px;'
+                'border-bottom:1px solid #464;z-index:10">레이스 상태 로딩중...</div>'
+                '<div id="bar" style="position:sticky;top:38px;background:#111;'
                 'padding:8px;font-family:monospace;font-size:14px;'
                 'border-bottom:1px solid #444;z-index:9">파라미터 로딩중...</div>'
                 '<script>'
+                'const MODE_COLOR={LANE:"#5f5",SIGN:"#f55",DYNAMIC:"#fa0",'
+                'ROUNDABOUT:"#5cf",RABACON:"#c8f",STATIC:"#c8f",TUNNEL:"#c8f",PARKING:"#c8f"};'
                 'setInterval(()=>fetch("/status").then(r=>r.json()).then(s=>{'
+                # 레이스 모니터 바 (500ms 갱신)
+                'if(s.race){'
+                'let items=Object.entries(s.race).map(([k,o])=>{'
+                'let st=o.stale?"opacity:.35":"";'
+                'if(k==="MODE"){let c=MODE_COLOR[o.v]||"#eee";'
+                'return `<span style="${st};background:#222;border:1px solid ${c};color:${c};'
+                'padding:1px 8px;border-radius:4px;font-weight:bold">${o.v}</span>`;}'
+                'return `<span style="${st}">${k} <b style="color:#ff6">${o.v}</b></span>`;'
+                '}).join(" · ");'
+                'document.getElementById("race").innerHTML=`🏁 ${items}`;}'
+                # 기존 파라미터 바
                 'let e=s.estop===true?"⛔E-STOP ":"";'
                 'let b=s.battery!==null?`🔋${s.battery.toFixed(0)}% `:"";'
                 'let p=Object.entries(s.params).map(([k,v])=>k===s.selected'
@@ -273,7 +331,7 @@ def make_handler(node: WebViewerNode):
                 '`<span style="color:#f55">${e}</span><span style="color:#5f5">${b}</span>${p}`;'
                 'document.querySelectorAll("#guide tr[data-k]").forEach(tr=>{'
                 'tr.style.background=tr.dataset.k===s.selected?"#264":"";});'
-                '}).catch(()=>{}),1000);'
+                '}).catch(()=>{}),500);'
                 '</script>'
             )
             guide = GUIDE_HTML

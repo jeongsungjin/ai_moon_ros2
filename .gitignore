@@ -24,9 +24,11 @@ perception.yolo26/*
 !perception.yolo26/README.dataset.txt
 !perception.yolo26/README.roboflow.txt
 
-# 학습 산출물 / 모델 가중치 (모델은 scp 로 보드 전달)
+# 학습 산출물
 runs/
-models/*.pt
 models/*.onnx
 *.engine
 tune_logs/
+# 배포 모델(5MB)은 git 으로 관리 — 보드에서 git pull 로 수령
+models/*.pt
+!models/yolo26n_traffic.pt
