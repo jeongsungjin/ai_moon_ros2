@@ -100,10 +100,10 @@ roundabout_mission:
     loop_sec: 8.0                # 1회전 소요 시간 (실측!)
     steer_integral_target: 3.0   # |조향%| 적분 목표 (실측! /roundabout/steer_integral 관찰)
     loop_lane_side: LEFT         # 회전 중 추종 차선 (안쪽. 정방향 반시계 기준 LEFT)
-    exit_mode: lane              # 'lane'(차선 전환 탈출, 권장) | 'steer'(고정 조향)
-    exit_lane_side: RIGHT        # lane 모드: 탈출 시 추종 차선 (바깥쪽)
-    exit_angle: -100.0           # steer 모드: 탈출 조향 (angle 단위 ≈ -0.29 steering)
-    exit_speed: 0.2              # steer 모드: 탈출 속도
+    exit_mode: lane_steer        # 'lane_steer'(차선+바이어스, 권장) | 'lane' | 'steer'(고정)
+    exit_lane_side: RIGHT        # 탈출 시 추종 차선 (바깥쪽)
+    exit_angle: -100.0           # lane_steer: 차선 조향에 가산할 바이어스 / steer: 고정 조향
+    exit_speed: 0.2              # 탈출 속도 (0 이하면 차선 속도 그대로)
     exit_duration_sec: 2.0       # 탈출 유지 시간 → 이후 BOTH 복귀
     track_reverse: false         # 역방향 트랙 배정 시 true (차선/조향/적분 자동 반전)
 

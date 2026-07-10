@@ -57,11 +57,12 @@ class RoundaboutMissionNode(Node):
         # (정방향 반시계 회전 기준 LEFT. track_reverse=true 면 자동으로 반대로)
         self.declare_parameter('loop_lane_side', 'LEFT')   # 'LEFT'|'RIGHT'|'BOTH'
         # ---- 탈출 방식 ----
-        # 'lane' : 탈출 시 반대쪽 차선 추종으로 전환 (슬라이딩윈도우가 조향 — 권장)
-        # 'steer': exit_duration 동안 고정 조향 개입 (open-loop, fallback)
-        self.declare_parameter('exit_mode', 'lane')
-        self.declare_parameter('exit_lane_side', 'RIGHT')  # exit_mode='lane' 시 추종 차선
-        self.declare_parameter('exit_angle', -100.0)       # exit_mode='steer' 시 조향 (angle 단위)
+        # 'lane'      : 반대쪽 차선 추종으로 전환 (슬라이딩윈도우가 조향)
+        # 'lane_steer': 차선 추종 전환 + 차선 조향값에 exit_angle 바이어스 가산 (권장)
+        # 'steer'     : exit_duration 동안 고정 조향 개입 (open-loop, fallback)
+        self.declare_parameter('exit_mode', 'lane_steer')
+        self.declare_parameter('exit_lane_side', 'RIGHT')  # lane/lane_steer 시 추종 차선
+        self.declare_parameter('exit_angle', -100.0)       # steer: 고정 조향 / lane_steer: 바이어스
         self.declare_parameter('exit_speed', 0.2)
         self.declare_parameter('exit_duration_sec', 2.0)   # 탈출 유지 시간 (이후 BOTH 복귀)
         # 정/역방향 트랙: 회전 방향 반대 → 차선/조향/적분 부호 자동 반전
@@ -87,6 +88,8 @@ class RoundaboutMissionNode(Node):
         self.create_subscription(String, '/mission/traffic_state', self.traffic_state_callback, 10)
         self.create_subscription(Int32, '/orange_pixels', self.orange_callback, 10)
         self.create_subscription(Control, '/control', self.control_callback, 10)
+        # lane_steer 탈출용: 차선 노드의 조향값에 바이어스를 가산하기 위해 구독
+        self.create_subscription(DriveCommand, '/motor_lane', self.lane_cmd_callback, 10)
 
         self.cmd_pub = self.create_publisher(DriveCommand, '/motor_roundabout', 10)
         self.state_pub = self.create_publisher(String, '/mission/roundabout_state', 10)
@@ -104,6 +107,8 @@ class RoundaboutMissionNode(Node):
         self.orange_pixels = 0
         self.steer_integral = 0.0
         self.last_control_time = None
+        self.lane_angle = 0.0
+        self.lane_speed = 0.0
 
         self.timer = self.create_timer(1.0 / publish_hz, self.loop)
 
@@ -121,6 +126,10 @@ class RoundaboutMissionNode(Node):
 
     def orange_callback(self, msg: Int32):
         self.orange_pixels = msg.data
+
+    def lane_cmd_callback(self, msg: DriveCommand):
+        self.lane_angle = msg.angle
+        self.lane_speed = msg.speed
 
     def control_callback(self, msg: Control):
         # LOOP 중 조향 적분 (회전량 추정). 정방향/역방향은 부호만 다름 → 절대 회전량은
@@ -210,7 +219,7 @@ class RoundaboutMissionNode(Node):
             if done:
                 self.state = EXIT
                 self.exit_start_time = self.get_clock().now()
-                if self.exit_mode == 'lane':
+                if self.exit_mode in ('lane', 'lane_steer'):
                     # 탈출: 바깥쪽 차선 기준으로 전환 → 슬라이딩윈도우가 출구로 유도
                     self.set_lane_side(self.side_for(self.exit_lane_side))
                 self.get_logger().info(
@@ -226,10 +235,17 @@ class RoundaboutMissionNode(Node):
 
         # ---- 발행 ----
         if self.state == EXIT and self.exit_mode == 'steer':
-            # steer 모드만 직접 조향 개입. lane 모드는 차선 주행이 계속 조향 (flag=False)
+            # 고정 조향 개입 (open-loop)
             angle = -self.exit_angle if self.track_reverse else self.exit_angle
             self.publish_cmd(flag=True, speed=self.exit_speed, angle=angle)
+        elif self.state == EXIT and self.exit_mode == 'lane_steer':
+            # 차선(바깥쪽) 조향값 + 탈출 바이어스 가산 — 차선 추종을 유지하면서
+            # 출구 방향으로 지속적으로 밀어줌 (closed-loop + bias)
+            bias = -self.exit_angle if self.track_reverse else self.exit_angle
+            speed = self.exit_speed if self.exit_speed > 0.0 else self.lane_speed
+            self.publish_cmd(flag=True, speed=speed, angle=self.lane_angle + bias)
         else:
+            # IDLE/ARMED/LOOP/DONE, 또는 lane 모드 EXIT: 차선 주행이 조향 (flag=False)
             self.publish_cmd(flag=False)
         self.state_pub.publish(String(data=self.state))
 
