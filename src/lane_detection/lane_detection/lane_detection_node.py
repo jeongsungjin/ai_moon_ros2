@@ -113,8 +113,9 @@ class LaneDetectionNode(Node):
 
         self.ctrl_cmd_pub = self.create_publisher(DriveCommand, '/motor_lane', 1)
         self.white_pixel_pub = self.create_publisher(Int32, '/white_pixels', 1)
-        # 주황 픽셀 수 — 회전교차로 미션의 진입(arm) 신호로 사용
         self.orange_pixel_pub = self.create_publisher(Int32, '/orange_pixels', 1)
+        # 노란 픽셀 수 — 회전교차로(노란 링) 진입(arm) 신호로 사용
+        self.yellow_pixel_pub = self.create_publisher(Int32, '/yellow_pixels', 1)
         self.x_location_pub = self.create_publisher(Float32, '/lane_x_location', 1)
         if self.publish_debug_image:
             self.debug_image_pub = self.create_publisher(
@@ -252,11 +253,10 @@ class LaneDetectionNode(Node):
 
         img_hsv = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2HSV)
 
-        # 색상별 마스크
+        # 색상별 마스크 (노랑 = 회전교차로 링 — 항상 계산해 /yellow_pixels 발행)
         mask_orange = cv2.inRange(img_hsv, self.lower_orange, self.upper_orange)
         mask_white = cv2.inRange(img_hsv, self.lower_white, self.upper_white)
-        mask_yellow = (cv2.inRange(img_hsv, self.lower_yellow, self.upper_yellow)
-                       if self.lane_use_yellow else None)
+        mask_yellow = cv2.inRange(img_hsv, self.lower_yellow, self.upper_yellow)
 
         # 차선 마스크 합성: 활성화된 색상들의 OR (새 트랙 = 흰색 + 주황)
         # (기존 코드는 노란색만 슬라이딩윈도우에 들어갔음 — 흰색은 정지선 카운트 전용이었음)
@@ -265,7 +265,7 @@ class LaneDetectionNode(Node):
             mask_lane = cv2.bitwise_or(mask_lane, mask_white)
         if self.lane_use_orange:
             mask_lane = cv2.bitwise_or(mask_lane, mask_orange)
-        if self.lane_use_yellow and mask_yellow is not None:
+        if self.lane_use_yellow:
             mask_lane = cv2.bitwise_or(mask_lane, mask_yellow)
 
         # 컬러 필터 이미지는 GUI 표시용으로만 필요 (와핑 입력으로는 미사용)
@@ -294,9 +294,10 @@ class LaneDetectionNode(Node):
         warped_lane = cv2.warpPerspective(mask_lane, matrix, (640, 480))
 
         # 픽셀 모니터링: 와핑 전 마스크 기준
-        # /orange_pixels 는 회전교차로 미션의 진입 신호로도 쓰임
+        # /yellow_pixels 는 회전교차로(노란 링) 진입 신호로 쓰임
         self.orange_pixel_pub.publish(Int32(data=int(np.count_nonzero(mask_orange))))
         self.white_pixel_pub.publish(Int32(data=int(np.count_nonzero(mask_white))))
+        self.yellow_pixel_pub.publish(Int32(data=int(np.count_nonzero(mask_yellow))))
 
         # 이진화 + 슬라이딩 윈도우
         bin_img = np.zeros_like(warped_lane)

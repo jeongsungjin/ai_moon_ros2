@@ -114,7 +114,7 @@ RACE_TOPICS = [
     ('아루코', '/aruco/visible', Bool),
     ('아루코ID', '/aruco/id', Int32),
     ('빨간구간', '/is_red', Bool),
-    ('주황px', '/orange_pixels', Int32),
+    ('노랑px', '/yellow_pixels', Int32),
     ('조향적분', '/roundabout/steer_integral', Float32),
     ('차선중심', '/lane_x_location', Float32),
 ]

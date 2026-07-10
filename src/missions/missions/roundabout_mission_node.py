@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """회전교차로 미션 노드 (In 코스: 진입 → 1회전 이상 → 탈출).
 
-인지 포인트: 회전교차로는 일반 차선(흰색)과 달리 주황색 → /orange_pixels 급증이 진입 신호.
+인지 포인트: 회전교차로 링은 노란색 → /yellow_pixels 급증이 진입 신호.
 회전 중에는 차선 주행(슬라이딩윈도우)이 원형 차선을 그대로 따라가므로,
 이 노드는 (1) 진입 시점 판단 (2) 1회전 완료 판단 (3) 탈출 조향 개입만 담당한다.
 
 단계 (국소 상태):
   IDLE   : 출발 대기. /mission/traffic_state 가 DRIVING 이 되면 타이머 시작
-  ARMED  : entry_min_sec 경과 후, orange 임계 초과 또는 entry_max_sec 도달 → LOOP
+  ARMED  : entry_min_sec 경과 후, yellow 임계 초과 또는 entry_max_sec 도달 → LOOP
   LOOP   : 제어 개입 없음(flag=False). 시간 + |조향| 적분으로 회전량 추정
            완료 조건: mode 'time'  → loop_sec 경과
                      mode 'steer' → 조향 적분 >= steer_integral_target
@@ -45,9 +45,9 @@ class RoundaboutMissionNode(Node):
         self.declare_parameter('publish_hz', 30.0)
         # ---- 진입 판단 ----
         self.declare_parameter('entry_min_sec', 3.0)      # 출발 후 이 시간 전엔 arm 안 함
-        self.declare_parameter('entry_max_sec', 15.0)     # 이 시간 도달 시 orange 무관 강제 진입
-        self.declare_parameter('use_orange_arm', True)
-        self.declare_parameter('orange_arm_threshold', 8000)   # /orange_pixels 임계
+        self.declare_parameter('entry_max_sec', 15.0)     # 이 시간 도달 시 yellow 무관 강제 진입
+        self.declare_parameter('use_yellow_arm', True)
+        self.declare_parameter('yellow_arm_threshold', 8000)   # /yellow_pixels 임계
         # ---- 1회전 완료 판단 ----
         self.declare_parameter('loop_done_mode', 'both')  # 'time' | 'steer' | 'both'
         self.declare_parameter('loop_sec', 8.0)           # 시간 기반: 1회전 소요시간 (실측!)
@@ -72,8 +72,8 @@ class RoundaboutMissionNode(Node):
         publish_hz = float(self.get_parameter('publish_hz').value)
         self.entry_min_sec = float(self.get_parameter('entry_min_sec').value)
         self.entry_max_sec = float(self.get_parameter('entry_max_sec').value)
-        self.use_orange_arm = bool(self.get_parameter('use_orange_arm').value)
-        self.orange_arm_threshold = int(self.get_parameter('orange_arm_threshold').value)
+        self.use_yellow_arm = bool(self.get_parameter('use_yellow_arm').value)
+        self.yellow_arm_threshold = int(self.get_parameter('yellow_arm_threshold').value)
         self.loop_done_mode = str(self.get_parameter('loop_done_mode').value)
         self.loop_sec = float(self.get_parameter('loop_sec').value)
         self.steer_integral_target = float(self.get_parameter('steer_integral_target').value)
@@ -86,7 +86,7 @@ class RoundaboutMissionNode(Node):
         self.track_reverse = bool(self.get_parameter('track_reverse').value)
 
         self.create_subscription(String, '/mission/traffic_state', self.traffic_state_callback, 10)
-        self.create_subscription(Int32, '/orange_pixels', self.orange_callback, 10)
+        self.create_subscription(Int32, '/yellow_pixels', self.yellow_callback, 10)
         self.create_subscription(Control, '/control', self.control_callback, 10)
         # lane_steer 탈출용: 차선 노드의 조향값에 바이어스를 가산하기 위해 구독
         self.create_subscription(DriveCommand, '/motor_lane', self.lane_cmd_callback, 10)
@@ -104,7 +104,7 @@ class RoundaboutMissionNode(Node):
         self.drive_start_time = None    # 출발(DRIVING 전환) 시각
         self.loop_start_time = None
         self.exit_start_time = None
-        self.orange_pixels = 0
+        self.yellow_pixels = 0
         self.steer_integral = 0.0
         self.last_control_time = None
         self.lane_angle = 0.0
@@ -124,8 +124,8 @@ class RoundaboutMissionNode(Node):
             self.drive_start_time = self.get_clock().now()
             self.get_logger().info('start detected (traffic DRIVING) — roundabout timer begins')
 
-    def orange_callback(self, msg: Int32):
-        self.orange_pixels = msg.data
+    def yellow_callback(self, msg: Int32):
+        self.yellow_pixels = msg.data
 
     def lane_cmd_callback(self, msg: DriveCommand):
         self.lane_angle = msg.angle
@@ -153,10 +153,10 @@ class RoundaboutMissionNode(Node):
                 self.enabled = bool(p.value)
             elif p.name == 'track_reverse':
                 self.track_reverse = bool(p.value)
-            elif p.name == 'use_orange_arm':
-                self.use_orange_arm = bool(p.value)
-            elif p.name == 'orange_arm_threshold':
-                self.orange_arm_threshold = int(p.value)
+            elif p.name == 'use_yellow_arm':
+                self.use_yellow_arm = bool(p.value)
+            elif p.name == 'yellow_arm_threshold':
+                self.yellow_arm_threshold = int(p.value)
             elif p.name in ('loop_done_mode', 'loop_lane_side', 'exit_mode', 'exit_lane_side'):
                 setattr(self, p.name, str(p.value))
             elif p.name in float_params:
@@ -194,16 +194,16 @@ class RoundaboutMissionNode(Node):
 
         elif self.state == ARMED:
             elapsed = self.elapsed_since(self.drive_start_time)
-            orange_hit = self.use_orange_arm and self.orange_pixels > self.orange_arm_threshold
+            yellow_hit = self.use_yellow_arm and self.yellow_pixels > self.yellow_arm_threshold
             timeout_hit = elapsed >= self.entry_max_sec
-            if orange_hit or timeout_hit:
+            if yellow_hit or timeout_hit:
                 self.state = LOOP
                 self.loop_start_time = self.get_clock().now()
                 self.steer_integral = 0.0
                 self.last_control_time = None
                 # 회전 중: 안쪽 차선 기준 추종
                 self.set_lane_side(self.side_for(self.loop_lane_side))
-                reason = 'orange' if orange_hit else 'entry_max_sec timeout'
+                reason = 'yellow' if yellow_hit else 'entry_max_sec timeout'
                 self.get_logger().info(f'LOOP entered ({reason})')
 
         elif self.state == LOOP:

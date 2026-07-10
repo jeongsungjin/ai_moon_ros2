@@ -34,10 +34,10 @@ lane_detection_node:
     pid_ki: 0.0008
     pid_kd: 0.15
 
-    # 차선 마스크에 들어갈 색 (새 트랙: 흰색 + 주황)
+    # 차선 마스크에 들어갈 색 (일반 차선: 흰+주황 / 회전교차로 링: 노랑)
     lane_use_white: true
     lane_use_orange: true
-    lane_use_yellow: false    # 구 트랙(노란 차선)용, 현재 미사용
+    lane_use_yellow: true     # 회전교차로 노란 링 추종에 필요 (HSV 는 현장에서 튜닝)
     # HSV 튜닝값 (조명 환경에 맞게 트랙에서 조정)
     hsv_orange_lower: [5, 80, 80]     # 주황 차선 — 현장 튜닝 필요
     hsv_orange_upper: [25, 255, 255]
@@ -94,8 +94,8 @@ roundabout_mission:
     publish_hz: 30.0
     entry_min_sec: 3.0           # 출발 후 이 시간 전엔 진입 감시 안 함
     entry_max_sec: 15.0          # 도달 시 orange 무관 강제 진입 (시간 기반 fallback)
-    use_orange_arm: true
-    orange_arm_threshold: 8000   # /orange_pixels 진입 임계 (실측!)
+    use_yellow_arm: true
+    yellow_arm_threshold: 8000   # /yellow_pixels 진입 임계 (실측! — 회전교차로 노란 링)
     loop_done_mode: both         # 'time' | 'steer' | 'both'
     loop_sec: 8.0                # 1회전 소요 시간 (실측!)
     steer_integral_target: 3.0   # |조향%| 적분 목표 (실측! /roundabout/steer_integral 관찰)
@@ -128,6 +128,13 @@ control_node:
     steer_trim: 0.12          # 직진 보정 (2026-07-08 topic pub 테스트로 실측 — steering 0.12 에서 직진)
     max_throttle: 0.6
     dry_run: false            # 하드웨어 없이 테스트 시 true
+    manual_timeout: 0.4       # 조종기 입력 우선권 유지 시간 (초)
+    # 서보/ESC 캘리브레이션 (펄스폭 us) — 조향 범위/중립 이상 시에만 조정
+    servo_center_us: 1500
+    servo_span_us: 500
+    esc_neutral_us: 1500
+    esc_fwd_us: 2000
+    esc_rev_us: 1000
 
 yolo_detect_node:
   ros__parameters:
