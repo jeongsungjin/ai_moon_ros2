@@ -181,7 +181,12 @@ class ParamTuner(Node):
         step = self.step_of(fine)
         cur = self.values.get((node_name, param))
         if cur is None:
-            self.log(f'⚠️  {param} 현재값 없음 — 노드 연결 확인')
+            # 튜너가 스택보다 먼저 켜졌던 경우 — 지금 다시 조회 (자가 회복)
+            self.log(f'{param} 값 없음 → 노드에 재조회...')
+            self.fetch_initial_values()
+            cur = self.values.get((node_name, param))
+        if cur is None:
+            self.log(f'⚠️  {param} 현재값 없음 — {node_name} 가 떠 있는지 확인')
             return
         new = max(lo, min(hi, cur + direction * step))
         new = int(round(new)) if is_int else round(new, 5)
@@ -304,6 +309,7 @@ def main():
                 tuner.estop_toggle()
                 continue
             if pressed('select', data.button_select):
+                tuner.fetch_initial_values()   # SELECT = 전체 재조회 + 출력
                 tuner.show_all()
                 continue
 

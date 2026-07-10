@@ -1,35 +1,11 @@
-"""슬라이딩 윈도우 차선 검출 (ROS1 slidewindow_both_lane.py 포팅 + 띠 검색 최적화).
+"""슬라이딩 윈도우 차선 검출 (ROS1 slidewindow_both_lane.py 포팅).
 
-2026-07-10 최적화: 픽셀 검색을 각 윈도우의 y 띠로 제한 (10.0ms → 5.4ms/frame).
-출력 동일성 검증: 퍼징 2,100건 + 실주행 bag 13,840프레임 전 항목 비트 단위 일치.
-경계 의미를 기준과 비트 단위로 동일하게 유지:
-  초기 박스: y ∈ (win_h1, win_h2]  (아래 제외, 위 포함),  x ∈ [l, r] (양끝 포함)
-  루프 윈도우: y ∈ [win_y_low, win_y_high),  x ∈ [low, high)
-픽셀 나열 순서도 기준과 동일(행 우선) — np.mean/np.polyfit 이 비트 단위 동일해지는 근거.
+ROS 의존성 제거: lane_side 는 노드가 set_lane_side() 로 설정한다.
+로직(윈도우 좌표, polyfit 보간, 이동평균 fallback)은 원본 그대로 유지.
 """
 
 import cv2
 import numpy as np
-
-
-def _band_pixels(img, y_lo_excl_or_incl, y_hi, inclusive_high):
-    """y 띠의 흰 픽셀 (절대 y 배열, x 배열) — 행 우선 순서 (기준의 nonzero 순서와 동일).
-
-    inclusive_high=True  → y ∈ (y_lo, y_hi]   (초기 박스 의미)
-    inclusive_high=False → y ∈ [y_lo, y_hi)   (루프 윈도우 의미)
-    """
-    h = img.shape[0]
-    if inclusive_high:
-        r0 = max(0, y_lo_excl_or_incl + 1)
-        r1 = min(h, y_hi + 1)
-    else:
-        r0 = max(0, y_lo_excl_or_incl)
-        r1 = min(h, y_hi)
-    if r0 >= r1:
-        e = np.array([], dtype=np.int64)
-        return e, e
-    ys_local, xs = img[r0:r1].nonzero()
-    return ys_local + r0, xs
 
 
 class SlideWindow:
@@ -63,13 +39,20 @@ class SlideWindow:
 
         window_height = 20
         nwindows = self.nwindows
+        nonzero = img.nonzero()
+        nonzeroy = np.array(nonzero[0])
+        nonzerox = np.array(nonzero[1])
         margin = self.margin
         minpix = self.minpix
+        left_lane_inds = np.array([], dtype=int)
+        right_lane_inds = np.array([], dtype=int)
 
         # 초기 탐색 윈도우 (화면 하단) — 값은 __init__ 의 튜닝 파라미터
         win_h1 = self.win_h1
         win_h2 = 480
 
+        # 안쪽 경계를 물려 중앙에 완충지대 확보
+        # (커브에서 왼쪽 차선이 중앙까지 넘어와도 오른쪽 박스가 잡아채지 않게)
         win_l_w_l = 145 - self.win_half
         win_l_w_r = 145 + self.win_half
         win_r_w_l = 495 - self.win_half
@@ -82,22 +65,19 @@ class SlideWindow:
         left_found = False
         right_found = False
 
-        # 초기 박스 띠의 픽셀 (한 번만 추출, 좌/우 박스가 같은 띠를 공유)
-        box_y, box_x = _band_pixels(img, win_h1, win_h2, inclusive_high=True)
-
-        # 기준과 동일: 초기 박스 픽셀의 (y, x) 를 보관 → mean/polyfit 입력
-        left_y = left_x = right_y = right_x = None
-
         if self.lane_side in ("LEFT", "BOTH"):
             pts_left = np.array(
                 [[win_l_w_l, win_h2], [win_l_w_l, win_h1], [win_l_w_r, win_h1], [win_l_w_r, win_h2]],
                 np.int32,
             )
             cv2.polylines(out_img, [pts_left], False, (0, 255, 0), 1)
-            m = (box_x >= win_l_w_l) & (box_x <= win_l_w_r)   # x 양끝 포함 (기준과 동일)
-            if m.any():
+            good_left_inds = (
+                (nonzerox >= win_l_w_l) & (nonzeroy <= win_h2)
+                & (nonzeroy > win_h1) & (nonzerox <= win_l_w_r)
+            ).nonzero()[0]
+            if len(good_left_inds) > 0:
                 left_found = True
-                left_y, left_x = box_y[m], box_x[m]
+                left_lane_inds = np.concatenate((left_lane_inds, good_left_inds))
 
         if self.lane_side in ("RIGHT", "BOTH"):
             pts_right = np.array(
@@ -105,12 +85,16 @@ class SlideWindow:
                 np.int32,
             )
             cv2.polylines(out_img, [pts_right], False, (255, 0, 0), 1)
-            m = (box_x >= win_r_w_l) & (box_x <= win_r_w_r)
-            if m.any():
+            good_right_inds = (
+                (nonzerox >= win_r_w_l) & (nonzeroy <= win_h2)
+                & (nonzeroy > win_h1) & (nonzerox <= win_r_w_r)
+            ).nonzero()[0]
+            if len(good_right_inds) > 0:
                 right_found = True
-                right_y, right_x = box_y[m], box_x[m]
+                right_lane_inds = np.concatenate((right_lane_inds, good_right_inds))
 
-        # 기준 차선 선택: 오른쪽 우선 (원본 동작), 없으면 왼쪽 폴백
+        # 기준 차선 선택: 오른쪽 우선 (원본 동작), 없으면 왼쪽 폴백 (원본은 바로 MID 였음)
+        # -> 코너에서 오른쪽 차선을 잠깐 놓쳐도 왼쪽 차선으로 계속 추종
         if right_found:
             line_flag = 2
         elif left_found:
@@ -121,13 +105,14 @@ class SlideWindow:
         y_current = height - 1
         x_current = None
         # polyfit 캐시: 입력(초기 박스 픽셀)이 루프 중 불변이라 결과가 항상 같음
+        # — 윈도우 미스마다 재계산하던 것이 프레임당 수십 ms 병목이었음
         p_left = None
         p_right = None
 
-        if line_flag == 1 and left_x is not None and len(left_x) > 0:
-            x_current = int(np.mean(left_x))
-        elif line_flag == 2 and right_x is not None and len(right_x) > 0:
-            x_current = int(np.mean(right_x))
+        if line_flag == 1 and len(left_lane_inds) > 0:
+            x_current = int(np.mean(nonzerox[left_lane_inds]))
+        elif line_flag == 2 and len(right_lane_inds) > 0:
+            x_current = int(np.mean(nonzerox[right_lane_inds]))
         else:
             # 차선 미검출: 이동평균으로 이전 위치 유지
             self.current_line = "MID"
@@ -151,15 +136,16 @@ class SlideWindow:
                     (255, 0, 0), 1,
                 )
 
-                by, bx = _band_pixels(img, win_y_low, win_y_high, inclusive_high=False)
-                m = (bx >= win_x_low) & (bx < win_x_high)     # x 반개구간 (기준과 동일)
-                good_x = bx[m]
+                good_left_inds = (
+                    (nonzeroy >= win_y_low) & (nonzeroy < win_y_high)
+                    & (nonzerox >= win_x_low) & (nonzerox < win_x_high)
+                ).nonzero()[0]
 
-                if len(good_x) > minpix:
-                    x_current = int(np.mean(good_x))
-                elif len(left_x) > 0:
+                if len(good_left_inds) > minpix:
+                    x_current = int(np.mean(nonzerox[good_left_inds]))
+                elif len(left_lane_inds) > 0:
                     if p_left is None:
-                        p_left = np.polyfit(left_y, left_x, 2)
+                        p_left = np.polyfit(nonzeroy[left_lane_inds], nonzerox[left_lane_inds], 2)
                     x_current = int(np.polyval(p_left, win_y_high))
 
                 if circle_height - 10 <= win_y_low < circle_height + 10:
@@ -180,15 +166,16 @@ class SlideWindow:
                 )
                 cv2.rectangle(out_img, (win_x_low, win_y_low), (win_x_high, win_y_high), (255, 0, 0), 1)
 
-                by, bx = _band_pixels(img, win_y_low, win_y_high, inclusive_high=False)
-                m = (bx >= win_x_low) & (bx < win_x_high)
-                good_x = bx[m]
+                good_right_inds = (
+                    (nonzeroy >= win_y_low) & (nonzeroy < win_y_high)
+                    & (nonzerox >= win_x_low) & (nonzerox < win_x_high)
+                ).nonzero()[0]
 
-                if len(good_x) > minpix:
-                    x_current = int(np.mean(good_x))
-                elif len(right_x) > 0:
+                if len(good_right_inds) > minpix:
+                    x_current = int(np.mean(nonzerox[good_right_inds]))
+                elif len(right_lane_inds) > 0:
                     if p_right is None:
-                        p_right = np.polyfit(right_y, right_x, 2)
+                        p_right = np.polyfit(nonzeroy[right_lane_inds], nonzerox[right_lane_inds], 2)
                     x_current = int(np.polyval(p_right, win_y_high))
 
                 if circle_height - 10 <= win_y_low < circle_height + 10:
@@ -196,4 +183,6 @@ class SlideWindow:
                     cv2.circle(out_img, (x_location, circle_height), 10, (0, 0, 255), 5)
 
         # 원본과 동일: 검출 성공 시 x_previous 는 갱신하지 않음
+        # (원본 slidewindow_both_lane.py 에서 `self.x_previous = x_location` 이
+        #  주석 처리되어 있었음 — 미검출(MID) fallback 은 320 쪽으로 수렴)
         return out_img, x_location, self.current_line
