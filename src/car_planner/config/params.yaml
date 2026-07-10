@@ -54,6 +54,7 @@ aruco_detect_node:
     process_hz: 15.0
     aruco_dict: DICT_4X4_50      # 대회 마커 사전 정보 확인 후 확정!
     min_marker_height_px: 20     # 반응 거리 (작으면 멀리서도 반응)
+    target_ids: [-1]             # 반응할 마커 ID. [-1]=전체, 특정만: [3] 또는 [3, 7]
     publish_debug_image: true
 
 red_zone_node:

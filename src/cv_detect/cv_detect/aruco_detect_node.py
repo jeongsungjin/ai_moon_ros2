@@ -41,12 +41,16 @@ class ArucoDetectNode(Node):
         # 대회 마커 사전은 사전 제공 정보 확인 후 확정 (기본 4x4_50)
         self.declare_parameter('aruco_dict', 'DICT_4X4_50')
         self.declare_parameter('min_marker_height_px', 20)   # 이보다 작으면(멀면) 무시
+        # 반응할 마커 ID 목록. [-1] = 전체 허용. 특정 ID만: 예 [3] 또는 [3, 7]
+        # (현장에서 ros2 topic echo /aruco/id 로 장애물 마커 ID 확인 후 설정)
+        self.declare_parameter('target_ids', [-1])
         self.declare_parameter('publish_debug_image', True)
 
         image_topic = str(self.get_parameter('image_topic').value)
         process_hz = float(self.get_parameter('process_hz').value)
         dict_name = str(self.get_parameter('aruco_dict').value)
         self.min_marker_height_px = int(self.get_parameter('min_marker_height_px').value)
+        self.target_ids = [int(v) for v in self.get_parameter('target_ids').value]
         self.publish_debug_image = bool(self.get_parameter('publish_debug_image').value)
 
         self.detect = make_detector(dict_name)
@@ -67,12 +71,27 @@ class ArucoDetectNode(Node):
                 CompressedImage, '/aruco/image/debug', image_qos
             )
 
+        # target_ids / min_marker_height_px 실시간 변경
+        from rcl_interfaces.msg import SetParametersResult
+
+        def on_param_change(params):
+            for p in params:
+                if p.name == 'target_ids':
+                    self.target_ids = [int(v) for v in p.value]
+                elif p.name == 'min_marker_height_px':
+                    self.min_marker_height_px = int(p.value)
+                self.get_logger().info(f'param updated: {p.name} = {p.value}')
+            return SetParametersResult(successful=True)
+
+        self.add_on_set_parameters_callback(on_param_change)
+
         self.raw_image = None
         self.timer = self.create_timer(1.0 / process_hz, self.process)
 
         self.get_logger().info(
             f'aruco_detect_node started: dict={dict_name}, '
-            f'min_h={self.min_marker_height_px}px @{process_hz}Hz'
+            f'min_h={self.min_marker_height_px}px, target_ids={self.target_ids} '
+            f'@{process_hz}Hz'
         )
 
     def image_callback(self, msg: CompressedImage):
@@ -88,10 +107,15 @@ class ArucoDetectNode(Node):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         corners, ids = self.detect(gray)
 
+        accept_all = (len(self.target_ids) == 0) or (self.target_ids == [-1])
+
         best_id = -1
         best_h = 0
         if ids is not None and len(ids) > 0:
             for marker_corners, marker_id in zip(corners, ids.flatten()):
+                # ID 필터: target_ids 에 없는 마커는 무시 ([-1] = 전체 허용)
+                if not accept_all and int(marker_id) not in self.target_ids:
+                    continue
                 pts = marker_corners.reshape(-1, 2)
                 h = int(pts[:, 1].max() - pts[:, 1].min())
                 if h > best_h:
