@@ -19,7 +19,7 @@ lane_detection_node:
     speed_safe: 0.20
     speed_fast: 0.5
     use_pid: false
-    publish_debug_image: true
+    publish_debug_image: false  # 디버그 영상 끔 (+1~2fps) — 슬라이딩윈도우 확인할 땐 true 로
     show_gui: false           # 모니터/VNC 연결 시 true → imshow + HSV 트랙바
     # 슬라이딩윈도우 튜닝값 (조종기 튜너/param set 으로 실시간 변경 가능)
     sw_margin: 60             # 추적 윈도우 좌우 반폭
