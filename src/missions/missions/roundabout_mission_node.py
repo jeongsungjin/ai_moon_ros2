@@ -52,11 +52,19 @@ class RoundaboutMissionNode(Node):
         self.declare_parameter('loop_done_mode', 'both')  # 'time' | 'steer' | 'both'
         self.declare_parameter('loop_sec', 8.0)           # 시간 기반: 1회전 소요시간 (실측!)
         self.declare_parameter('steer_integral_target', 3.0)  # |조향%| 적분 목표 (실측!)
-        # ---- 탈출 개입 ----
-        self.declare_parameter('exit_angle', -100.0)      # 탈출 조향 (angle 단위, 부호 = 방향)
+        # ---- 회전 중 차선 기준 ----
+        # LOOP 진입 시 /lane_topic 으로 발행 — 안쪽 차선만 추종해 원을 안정적으로 돎
+        # (정방향 반시계 회전 기준 LEFT. track_reverse=true 면 자동으로 반대로)
+        self.declare_parameter('loop_lane_side', 'LEFT')   # 'LEFT'|'RIGHT'|'BOTH'
+        # ---- 탈출 방식 ----
+        # 'lane' : 탈출 시 반대쪽 차선 추종으로 전환 (슬라이딩윈도우가 조향 — 권장)
+        # 'steer': exit_duration 동안 고정 조향 개입 (open-loop, fallback)
+        self.declare_parameter('exit_mode', 'lane')
+        self.declare_parameter('exit_lane_side', 'RIGHT')  # exit_mode='lane' 시 추종 차선
+        self.declare_parameter('exit_angle', -100.0)       # exit_mode='steer' 시 조향 (angle 단위)
         self.declare_parameter('exit_speed', 0.2)
-        self.declare_parameter('exit_duration_sec', 1.2)
-        # 정/역방향 트랙: 회전 방향이 반대 → exit_angle 부호와 steer 적분 부호만 반전
+        self.declare_parameter('exit_duration_sec', 2.0)   # 탈출 유지 시간 (이후 BOTH 복귀)
+        # 정/역방향 트랙: 회전 방향 반대 → 차선/조향/적분 부호 자동 반전
         self.declare_parameter('track_reverse', False)
 
         self.enabled = bool(self.get_parameter('enabled').value)
@@ -68,6 +76,9 @@ class RoundaboutMissionNode(Node):
         self.loop_done_mode = str(self.get_parameter('loop_done_mode').value)
         self.loop_sec = float(self.get_parameter('loop_sec').value)
         self.steer_integral_target = float(self.get_parameter('steer_integral_target').value)
+        self.loop_lane_side = str(self.get_parameter('loop_lane_side').value)
+        self.exit_mode = str(self.get_parameter('exit_mode').value)
+        self.exit_lane_side = str(self.get_parameter('exit_lane_side').value)
         self.exit_angle = float(self.get_parameter('exit_angle').value)
         self.exit_speed = float(self.get_parameter('exit_speed').value)
         self.exit_duration_sec = float(self.get_parameter('exit_duration_sec').value)
@@ -80,6 +91,8 @@ class RoundaboutMissionNode(Node):
         self.cmd_pub = self.create_publisher(DriveCommand, '/motor_roundabout', 10)
         self.state_pub = self.create_publisher(String, '/mission/roundabout_state', 10)
         self.integral_pub = self.create_publisher(Float32, '/roundabout/steer_integral', 10)
+        # 차선 기준 전환 (lane_detection 의 슬라이딩윈도우가 구독)
+        self.lane_side_pub = self.create_publisher(String, '/lane_topic', 10)
 
         # 실시간 튜닝
         self.add_on_set_parameters_callback(self.on_param_change)
@@ -135,8 +148,8 @@ class RoundaboutMissionNode(Node):
                 self.use_orange_arm = bool(p.value)
             elif p.name == 'orange_arm_threshold':
                 self.orange_arm_threshold = int(p.value)
-            elif p.name == 'loop_done_mode':
-                self.loop_done_mode = str(p.value)
+            elif p.name in ('loop_done_mode', 'loop_lane_side', 'exit_mode', 'exit_lane_side'):
+                setattr(self, p.name, str(p.value))
             elif p.name in float_params:
                 setattr(self, p.name, float(p.value))
             self.get_logger().info(f'param updated: {p.name} = {p.value}')
@@ -147,6 +160,16 @@ class RoundaboutMissionNode(Node):
         if t is None:
             return 0.0
         return (self.get_clock().now() - t).nanoseconds * 1e-9
+
+    def side_for(self, side):
+        """track_reverse 시 LEFT/RIGHT 자동 반전 (거울상 트랙 대응)."""
+        if not self.track_reverse:
+            return side
+        return {'LEFT': 'RIGHT', 'RIGHT': 'LEFT'}.get(side, side)
+
+    def set_lane_side(self, side):
+        self.lane_side_pub.publish(String(data=side))
+        self.get_logger().info(f'lane side -> {side}')
 
     def loop(self):
         if not self.enabled:
@@ -169,6 +192,8 @@ class RoundaboutMissionNode(Node):
                 self.loop_start_time = self.get_clock().now()
                 self.steer_integral = 0.0
                 self.last_control_time = None
+                # 회전 중: 안쪽 차선 기준 추종
+                self.set_lane_side(self.side_for(self.loop_lane_side))
                 reason = 'orange' if orange_hit else 'entry_max_sec timeout'
                 self.get_logger().info(f'LOOP entered ({reason})')
 
@@ -185,17 +210,23 @@ class RoundaboutMissionNode(Node):
             if done:
                 self.state = EXIT
                 self.exit_start_time = self.get_clock().now()
+                if self.exit_mode == 'lane':
+                    # 탈출: 바깥쪽 차선 기준으로 전환 → 슬라이딩윈도우가 출구로 유도
+                    self.set_lane_side(self.side_for(self.exit_lane_side))
                 self.get_logger().info(
-                    f'LOOP done (t={loop_elapsed:.1f}s, integral={self.steer_integral:.2f}) — EXIT'
+                    f'LOOP done (t={loop_elapsed:.1f}s, integral={self.steer_integral:.2f}) '
+                    f'— EXIT ({self.exit_mode})'
                 )
 
         elif self.state == EXIT:
             if self.elapsed_since(self.exit_start_time) >= self.exit_duration_sec:
                 self.state = DONE
-                self.get_logger().info('roundabout DONE — control released')
+                self.set_lane_side('BOTH')   # 일반 주행 복귀
+                self.get_logger().info('roundabout DONE — lane BOTH, control released')
 
         # ---- 발행 ----
-        if self.state == EXIT:
+        if self.state == EXIT and self.exit_mode == 'steer':
+            # steer 모드만 직접 조향 개입. lane 모드는 차선 주행이 계속 조향 (flag=False)
             angle = -self.exit_angle if self.track_reverse else self.exit_angle
             self.publish_cmd(flag=True, speed=self.exit_speed, angle=angle)
         else:
