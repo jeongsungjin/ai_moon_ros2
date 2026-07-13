@@ -67,7 +67,12 @@ class DynamicObsMissionNode(Node):
         # red_gate 사용 시: 정지 "발동"만 빨간 구간으로 제한.
         # 이미 정지 중이면 게이트 무관하게 퇴거 판정은 계속한다 (멈춘 채 잠기는 것 방지)
         effective_visible = msg.data and (not self.use_red_gate or self.is_red or self.stopped)
-
+        # 디버그: launch 에서 print 는 버퍼링으로 안 보일 수 있어 로거 사용 (1초 스로틀)
+        self.get_logger().info(
+            f'aruco={msg.data} gate={self.use_red_gate} red={self.is_red} '
+            f'stopped={self.stopped} → eff={effective_visible}',
+            throttle_duration_sec=1.0,
+        )
         if effective_visible:
             self.appear_count += 1
             self.clear_count = 0
@@ -103,6 +108,7 @@ class DynamicObsMissionNode(Node):
         cmd.speed = 0.0
         cmd.angle = 0.0
         cmd.flag = bool(self.enabled and self.stopped)
+        print(f"Publishing DriveCommand: speed={cmd.speed}, angle={cmd.angle}, flag={cmd.flag}")
         self.cmd_pub.publish(cmd)
         self.state_pub.publish(
             String(data='STOPPED' if cmd.flag else 'CLEAR')
