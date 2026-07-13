@@ -107,20 +107,4 @@ def generate_launch_description():
             output='screen', parameters=[params_file],
             condition=IfCondition(use_control),
         ),
-
-        # ---------------- 모니터링 ----------------
-        Node(
-            package='car_planner', executable='web_viewer_node',
-            name='web_viewer_node', output='screen',
-            parameters=[{
-                'topics': [
-                    '/camera/image/compressed',
-                    '/lane_detection/image/debug',
-                    '/yolo/image/debug',
-                    '/aruco/image/debug',
-                    '/red_zone/image/debug',
-                ],
-            }],
-            condition=IfCondition(use_web_viewer),
-        ),
     ])

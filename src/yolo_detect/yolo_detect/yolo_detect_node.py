@@ -36,7 +36,7 @@ class YoloDetectNode(Node):
         self.declare_parameter('model_path', 'models/yolo26n_traffic.pt')
         self.declare_parameter('image_topic', '/camera/image/compressed')
         self.declare_parameter('detect_topic', '/traffic_sign')
-        self.declare_parameter('infer_hz', 10.0)          # 보드 성능에 맞게 (D3-G/Jetson: 5~15)
+        self.declare_parameter('infer_hz', 5.0)          # 보드 성능에 맞게 (D3-G/Jetson: 5~15)
         self.declare_parameter('conf_threshold', 0.5)
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('min_box_height_px', 30)   # 원본(640x480) 기준 최소 박스 높이
@@ -74,7 +74,7 @@ class YoloDetectNode(Node):
                 '(또는 model_path 파라미터로 경로 지정)'
             )
 
-        self.model = YOLO(model_path)
+        self.model = YOLO(model_path, half=True)
         self.device = device if device else None
         self.class_names = self.model.names  # {0:'green',1:'left',2:'red',3:'right'}
         self.get_logger().info(

@@ -36,8 +36,8 @@ class TrafficLightMissionNode(Node):
         # 비활성 시 항상 flag=False + 상태 'DRIVING' 발행 (회전교차로 타이머는 launch 시점부터)
         self.declare_parameter('enabled', True)
         self.declare_parameter('publish_hz', 30.0)
-        self.declare_parameter('green_stable_frames', 3)   # green 연속 N프레임 → 출발
-        self.declare_parameter('red_stable_frames', 5)     # red 연속 N프레임 → 정지
+        self.declare_parameter('green_stable_frames', 2)   # green 연속 N프레임 → 출발
+        self.declare_parameter('red_stable_frames', 1)     # red 연속 N프레임 → 정지
         # 출발 직후 같은 신호등의 red 를 볼 수 있으므로 일정 시간 red 무시.
         # 트랙 1랩 예상 시간보다 확실히 짧게, 출발 신호등을 벗어날 시간보다 길게.
         self.declare_parameter('min_drive_time_sec', 20.0)

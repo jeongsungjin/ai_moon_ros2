@@ -39,11 +39,11 @@ class ArucoDetectNode(Node):
         self.declare_parameter('image_topic', '/camera/image/compressed')
         self.declare_parameter('process_hz', 15.0)
         # 대회 마커 사전은 사전 제공 정보 확인 후 확정 (기본 4x4_50)
-        self.declare_parameter('aruco_dict', 'DICT_4X4_50')
+        self.declare_parameter('aruco_dict', 'DICT_6X6_50')
         self.declare_parameter('min_marker_height_px', 20)   # 이보다 작으면(멀면) 무시
         # 반응할 마커 ID 목록. [-1] = 전체 허용. 특정 ID만: 예 [3] 또는 [3, 7]
         # (현장에서 ros2 topic echo /aruco/id 로 장애물 마커 ID 확인 후 설정)
-        self.declare_parameter('target_ids', [-1])
+        self.declare_parameter('target_ids', [3])
         self.declare_parameter('publish_debug_image', True)
 
         image_topic = str(self.get_parameter('image_topic').value)

@@ -98,6 +98,23 @@ class LaneDetectionNode(Node):
         self.lower_white = np.array(self.get_parameter('hsv_white_lower').value)
         self.upper_white = np.array(self.get_parameter('hsv_white_upper').value)
 
+        # Perspective Transform (원본 좌표 유지)
+        left_margin = 200
+        top_margin = 340
+        src_points = np.float32([
+            [128, 400],
+            [left_margin, top_margin],
+            [x - left_margin, top_margin],
+            [520, 400],
+        ])
+        dst_points = np.float32([
+            [x // 4, 460],
+            [x // 4, 0],
+            [x // 4 * 3, 0],
+            [x // 4 * 3, 460],
+        ])
+        self.matrix = cv2.getPerspectiveTransform(src_points, dst_points)
+
         # ---------------- 통신 ----------------
         image_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -272,32 +289,15 @@ class LaneDetectionNode(Node):
         filtered_img = (cv2.bitwise_and(frame_resized, frame_resized, mask=mask_lane)
                         if self.show_gui else None)
 
-        # Perspective Transform (원본 좌표 유지)
-        left_margin = 200
-        top_margin = 340
-        src_points = np.float32([
-            [128, 400],
-            [left_margin, top_margin],
-            [x - left_margin, top_margin],
-            [520, 400],
-        ])
-        dst_points = np.float32([
-            [x // 4, 460],
-            [x // 4, 0],
-            [x // 4 * 3, 0],
-            [x // 4 * 3, 460],
-        ])
-        matrix = cv2.getPerspectiveTransform(src_points, dst_points)
-
-        # 슬라이딩윈도우 입력: 1채널 차선 마스크만 와핑
-        # (기존: 3채널 컬러 와핑 + cvtColor + 미사용 yellow 와핑 → 10fps CPU 병목이라 제거)
-        warped_lane = cv2.warpPerspective(mask_lane, matrix, (640, 480))
-
         # 픽셀 모니터링: 와핑 전 마스크 기준
         # /yellow_pixels 는 회전교차로(노란 링) 진입 신호로 쓰임
         self.orange_pixel_pub.publish(Int32(data=int(np.count_nonzero(mask_orange))))
         self.white_pixel_pub.publish(Int32(data=int(np.count_nonzero(mask_white))))
         self.yellow_pixel_pub.publish(Int32(data=int(np.count_nonzero(mask_yellow))))
+
+        # 슬라이딩윈도우 입력: 1채널 차선 마스크만 와핑
+        # (기존: 3채널 컬러 와핑 + cvtColor + 미사용 yellow 와핑 → 10fps CPU 병목이라 제거)
+        warped_lane = cv2.warpPerspective(mask_lane, self.matrix, (640, 480))
 
         # 이진화 + 슬라이딩 윈도우
         bin_img = np.zeros_like(warped_lane)

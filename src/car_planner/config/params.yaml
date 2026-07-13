@@ -16,17 +16,17 @@ lane_detection_node:
     image_topic: /camera/image/compressed
     process_hz: 30.0
     version: safe             # 'safe' | 'fast'
-    speed_safe: 0.20
+    speed_safe: 0.178
     speed_fast: 0.5
     use_pid: false
-    publish_debug_image: false  # 디버그 영상 끔 (+1~2fps) — 슬라이딩윈도우 확인할 땐 true 로
+    publish_debug_image: true  # 디버그 영상 끔 (+1~2fps) — 슬라이딩윈도우 확인할 땐 true 로
     show_gui: false           # 모니터/VNC 연결 시 true → imshow + HSV 트랙바
     # 슬라이딩윈도우 튜닝값 (조종기 튜너/param set 으로 실시간 변경 가능)
-    sw_margin: 60             # 추적 윈도우 좌우 반폭
+    sw_margin: 90             # 추적 윈도우 좌우 반폭
     sw_win_h1: 380            # 초기 탐색창 윗변 y
     sw_win_half: 140          # 초기 탐색창 반폭 (145/495 중심)
     sw_circle_height: 280     # 조향 기준점(ld) y — 80~459
-    sw_road_width: 0.51       # 차선 폭 비율
+    sw_road_width: 0.5       # 차선 폭 비율
     sw_nwindows: 20           # 추적 윈도우 개수 (×20px = 추적 높이, ld 커버 필요)
     sw_minpix: 0              # 윈도우 유효 최소 픽셀 (노이즈 문턱, 0=1픽셀도 인정)
     # PID 게인 (use_pid: true 일 때만 사용 — 지그재그/출렁임 억제)
@@ -51,8 +51,8 @@ lane_detection_node:
 aruco_detect_node:
   ros__parameters:
     image_topic: /camera/image/compressed
-    process_hz: 15.0
-    aruco_dict: DICT_4X4_50      # 대회 마커 사전 정보 확인 후 확정!
+    process_hz: 1.0
+    aruco_dict: DICT_6X6_250     # 보유 마커 실측 확정 (2026-07-11, ID=3 검출 ✓) — 대회 마커가 다르면 재확인
     min_marker_height_px: 20     # 반응 거리 (작으면 멀리서도 반응)
     target_ids: [-1]             # 반응할 마커 ID. [-1]=전체, 특정만: [3] 또는 [3, 7]
     publish_debug_image: true
@@ -60,7 +60,7 @@ aruco_detect_node:
 red_zone_node:
   ros__parameters:
     image_topic: /camera/image/compressed
-    process_hz: 15.0
+    process_hz: 3.0
     roi: [240, 480, 0, 640]      # 바닥이 보이는 하단부 (640x480 기준)
     hsv_red1_lower: [0, 80, 60]  # 빨강 low-hue 구간
     hsv_red1_upper: [10, 255, 255]
@@ -75,36 +75,36 @@ red_zone_node:
 traffic_light_mission:
   ros__parameters:
     enabled: true                # false = green 대기 없이 바로 주행 (race.launch use_yolo:=false 가 자동 제어)
-    publish_hz: 30.0
-    green_stable_frames: 3       # green 연속 N프레임 → 출발
-    red_stable_frames: 5         # red 연속 N프레임 → 도착 정지
+    publish_hz: 10.0
+    green_stable_frames: 1       # green 연속 N프레임 → 출발
+    red_stable_frames: 1        # red 연속 N프레임 → 도착 정지
     min_drive_time_sec: 20.0     # 출발 후 이 시간 동안 red 무시 (1랩보다 짧게, 실측 조정)
 
 dynamic_obs_mission:
   ros__parameters:
     enabled: true
-    publish_hz: 30.0
+    publish_hz: 10.0
     appear_frames: 2             # 아루코 연속 N프레임 → 즉시 정지 (15Hz 기준 ≈0.13s)
     clear_frames: 8              # 미검출 연속 N프레임 → 재출발 (≈0.53s, 깜빡임 조기출발 방지)
     use_red_gate: false          # true: 빨간 구간(/is_red)에서만 정지 발동
 
 roundabout_mission:
   ros__parameters:
-    enabled: false               # ⚠️ 현장에서 entry/loop/exit 튜닝 후 true
+    enabled: true               # ⚠️ 현장에서 entry/loop/exit 튜닝 후 true
     publish_hz: 30.0
-    entry_min_sec: 3.0           # 출발 후 이 시간 전엔 진입 감시 안 함
-    entry_max_sec: 15.0          # 도달 시 orange 무관 강제 진입 (시간 기반 fallback)
+    entry_min_sec: 0.0           # 출발 후 이 시간 전엔 진입 감시 안 함
+    entry_max_sec: 10000.0          # 도달 시 orange 무관 강제 진입 (시간 기반 fallback)
     use_yellow_arm: true
-    yellow_arm_threshold: 8000   # /yellow_pixels 진입 임계 (실측! — 회전교차로 노란 링)
+    yellow_arm_threshold: 1500   # /yellow_pixels 진입 임계 (실측! — 회전교차로 노란 링)
     loop_done_mode: both         # 'time' | 'steer' | 'both'
-    loop_sec: 8.0                # 1회전 소요 시간 (실측!)
-    steer_integral_target: 3.0   # |조향%| 적분 목표 (실측! /roundabout/steer_integral 관찰)
+    loop_sec: 30.0                # 1회전 소요 시간 (실측!)
+    steer_integral_target: 30.0   # |조향%| 적분 목표 (실측! /roundabout/steer_integral 관찰)
     loop_lane_side: LEFT         # 회전 중 추종 차선 (안쪽. 정방향 반시계 기준 LEFT)
     exit_mode: lane_steer        # 'lane_steer'(차선+바이어스, 권장) | 'lane' | 'steer'(고정)
     exit_lane_side: RIGHT        # 탈출 시 추종 차선 (바깥쪽)
     exit_angle: -100.0           # lane_steer: 차선 조향에 가산할 바이어스 / steer: 고정 조향
-    exit_speed: 0.2              # 탈출 속도 (0 이하면 차선 속도 그대로)
-    exit_duration_sec: 2.0       # 탈출 유지 시간 → 이후 BOTH 복귀
+    exit_speed: 0.178              # 탈출 속도 (0 이하면 차선 속도 그대로)
+    exit_duration_sec: 3.0       # 탈출 유지 시간 → 이후 BOTH 복귀
     track_reverse: false         # 역방향 트랙 배정 시 true (차선/조향/적분 자동 반전)
 
 main_planner:
@@ -138,10 +138,10 @@ control_node:
 
 yolo_detect_node:
   ros__parameters:
-    model_path: models/yolo26n_traffic.pt   # 학습 후 배치 (실행 위치 기준 상대경로 or 절대경로)
+    model_path: /home/topst/ai_moon_ros2/models/yolo26n_traffic.pt   # 학습 후 배치 (실행 위치 기준 상대경로 or 절대경로)
     image_topic: /camera/image/compressed
     detect_topic: /traffic_sign
-    infer_hz: 10.0            # 보드 성능에 맞게 (버벅이면 5.0)
+    infer_hz: 5.0            # 보드 성능에 맞게 (버벅이면 5.0)
     conf_threshold: 0.5
     imgsz: 640
     min_box_height_px: 30     # 이보다 작은(먼) 검출 무시 — 반응 거리 튜닝
