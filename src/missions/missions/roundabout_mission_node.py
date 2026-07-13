@@ -24,7 +24,8 @@ angle 단위 주의: DriveCommand.angle 은 차선 픽셀오차 스케일.
 
 import rclpy
 from rclpy.node import Node
-from rcl_interfaces.msg import SetParametersResult
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue, SetParametersResult
+from rcl_interfaces.srv import GetParameters, SetParameters
 from std_msgs.msg import Float32, Int32, String
 
 from control_msgs.msg import Control
@@ -44,10 +45,10 @@ class RoundaboutMissionNode(Node):
         self.declare_parameter('enabled', False)          # ⚠️ 현장 튜닝 후 true
         self.declare_parameter('publish_hz', 30.0)
         # ---- 진입 판단 ----
-        self.declare_parameter('entry_min_sec', 3.0)      # 출발 후 이 시간 전엔 arm 안 함
+        self.declare_parameter('entry_min_sec', 0.0)      # 출발 후 이 시간 전엔 arm 안 함
         self.declare_parameter('entry_max_sec', 15.0)     # 이 시간 도달 시 yellow 무관 강제 진입
         self.declare_parameter('use_yellow_arm', True)
-        self.declare_parameter('yellow_arm_threshold', 8000)   # /yellow_pixels 임계
+        self.declare_parameter('yellow_arm_threshold', 1800)   # /yellow_pixels 임계
         # ---- 1회전 완료 판단 ----
         self.declare_parameter('loop_done_mode', 'both')  # 'time' | 'steer' | 'both'
         self.declare_parameter('loop_sec', 8.0)           # 시간 기반: 1회전 소요시간 (실측!)
@@ -94,8 +95,16 @@ class RoundaboutMissionNode(Node):
         self.cmd_pub = self.create_publisher(DriveCommand, '/motor_roundabout', 10)
         self.state_pub = self.create_publisher(String, '/mission/roundabout_state', 10)
         self.integral_pub = self.create_publisher(Float32, '/roundabout/steer_integral', 10)
+        # LOOP 경과 시간 (뷰어 모니터링용 — loop_sec 대비 진행률)
+        self.elapsed_pub = self.create_publisher(Float32, '/roundabout/loop_elapsed', 10)
         # 차선 기준 전환 (lane_detection 의 슬라이딩윈도우가 구독)
         self.lane_side_pub = self.create_publisher(String, '/lane_topic', 10)
+
+        # 차선 색 전환: LOOP~DONE 동안 노랑(링) 전용, DONE 에서 원래 색으로 복원
+        # (흰 바깥차선이 왼쪽 박스에 오인되는 것을 색 차원에서 차단)
+        self._lane_get = self.create_client(GetParameters, '/lane_detection_node/get_parameters')
+        self._lane_set = self.create_client(SetParameters, '/lane_detection_node/set_parameters')
+        self._saved_colors = None   # LOOP 진입 시점의 (white, orange, yellow) 스냅샷
 
         # 실시간 튜닝
         self.add_on_set_parameters_callback(self.on_param_change)
@@ -151,6 +160,10 @@ class RoundaboutMissionNode(Node):
         for p in params:
             if p.name == 'enabled':
                 self.enabled = bool(p.value)
+                # 회전 중 강제 비활성화 시 색/차선 기준 안전 복원
+                if not self.enabled and self._saved_colors is not None:
+                    self.restore_colors()
+                    self.set_lane_side('BOTH')
             elif p.name == 'track_reverse':
                 self.track_reverse = bool(p.value)
             elif p.name == 'use_yellow_arm':
@@ -180,6 +193,43 @@ class RoundaboutMissionNode(Node):
         self.lane_side_pub.publish(String(data=side))
         self.get_logger().info(f'lane side -> {side}')
 
+    # ---------------- 차선 색 전환 ----------------
+    def _apply_lane_colors(self, white, orange, yellow):
+        if not self._lane_set.service_is_ready():
+            self.get_logger().warning('lane 파라미터 서비스 미준비 — 색 전환 실패!')
+            return
+        params = []
+        for name, val in (('lane_use_white', white),
+                          ('lane_use_orange', orange),
+                          ('lane_use_yellow', yellow)):
+            pv = ParameterValue()
+            pv.type = ParameterType.PARAMETER_BOOL
+            pv.bool_value = bool(val)
+            params.append(Parameter(name=name, value=pv))
+        self._lane_set.call_async(SetParameters.Request(parameters=params))
+        self.get_logger().info(f'차선 색 전환: white={white} orange={orange} yellow={yellow}')
+
+    def set_yellow_only(self):
+        """LOOP 진입: 현재 색 구성을 스냅샷하고 노랑(링) 전용으로 전환."""
+        names = ['lane_use_white', 'lane_use_orange', 'lane_use_yellow']
+        if self._lane_get.service_is_ready():
+            fut = self._lane_get.call_async(GetParameters.Request(names=names))
+
+            def done(f):
+                try:
+                    vals = f.result().values
+                    self._saved_colors = tuple(v.bool_value for v in vals)
+                except Exception:
+                    pass
+            fut.add_done_callback(done)
+        self._apply_lane_colors(False, False, True)
+
+    def restore_colors(self):
+        """DONE/비활성화: LOOP 진입 전 색 구성으로 복원 (스냅샷 실패 시 기본값)."""
+        w, o, y = self._saved_colors if self._saved_colors else (True, True, True)
+        self._apply_lane_colors(w, o, y)
+        self._saved_colors = None
+
     def loop(self):
         if not self.enabled:
             self.publish_cmd(flag=False)
@@ -201,8 +251,9 @@ class RoundaboutMissionNode(Node):
                 self.loop_start_time = self.get_clock().now()
                 self.steer_integral = 0.0
                 self.last_control_time = None
-                # 회전 중: 안쪽 차선 기준 추종
+                # 회전 중: 안쪽 차선 기준 추종 + 노랑(링) 전용 마스크
                 self.set_lane_side(self.side_for(self.loop_lane_side))
+                self.set_yellow_only()
                 reason = 'yellow' if yellow_hit else 'entry_max_sec timeout'
                 self.get_logger().info(f'LOOP entered ({reason})')
 
@@ -216,6 +267,7 @@ class RoundaboutMissionNode(Node):
                 else (time_done or steer_done)
             )
             self.integral_pub.publish(Float32(data=float(self.steer_integral)))
+            self.elapsed_pub.publish(Float32(data=float(loop_elapsed)))
             if done:
                 self.state = EXIT
                 self.exit_start_time = self.get_clock().now()
@@ -231,6 +283,7 @@ class RoundaboutMissionNode(Node):
             if self.elapsed_since(self.exit_start_time) >= self.exit_duration_sec:
                 self.state = DONE
                 self.set_lane_side('BOTH')   # 일반 주행 복귀
+                self.restore_colors()        # 차선 색도 원래대로 (노랑+흰 등)
                 self.get_logger().info('roundabout DONE — lane BOTH, control released')
 
         # ---- 발행 ----
