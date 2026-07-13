@@ -117,6 +117,8 @@ RACE_TOPICS = [
     ('노랑px', '/yellow_pixels', Int32),
     ('조향적분', '/roundabout/steer_integral', Float32),
     ('차선중심', '/lane_x_location', Float32),
+    ('차선기준', '/lane_topic', String),   # 슬라이딩윈도우 추종 기준 (LEFT/RIGHT/BOTH)
+    ('회전t', '/roundabout/loop_elapsed', Float32),   # LOOP 경과 시간(초)
 ]
 
 # 상태 바에 표시할 주요 파라미터 — 순서 = param_tuner 십자키 순서 = 가이드 순서
@@ -198,6 +200,12 @@ class WebViewerNode(Node):
         )
         self.create_subscription(
             String, '/param_tuner/selected', self._on_selected, latched)
+
+        # 회전교차로 판정 기준값 폴링 (진행률 게이지용)
+        self.rb = {}
+        self._rb_client = self.create_client(
+            GetParameters, '/roundabout_mission/get_parameters')
+
         self.status_timer = self.create_timer(1.0, self._refresh_status)
 
         self.get_logger().info(
@@ -253,6 +261,23 @@ class WebViewerNode(Node):
                         self.status[label] = pv.integer_value
             future.add_done_callback(done)
 
+        # 회전교차로 기준값 (임계/목표/1회전시간)
+        if self._rb_client.service_is_ready():
+            rb_names = ['yellow_arm_threshold', 'steer_integral_target', 'loop_sec']
+            rb_future = self._rb_client.call_async(
+                GetParameters.Request(names=rb_names))
+
+            def rb_done(fut):
+                try:
+                    values = fut.result().values
+                except Exception:
+                    return
+                for name, pv in zip(rb_names, values):
+                    self.rb[name] = (round(pv.double_value, 2)
+                                     if pv.type == ParameterType.PARAMETER_DOUBLE
+                                     else pv.integer_value)
+            rb_future.add_done_callback(rb_done)
+
 
 def make_handler(node: WebViewerNode):
     class Handler(BaseHTTPRequestHandler):
@@ -288,6 +313,7 @@ def make_handler(node: WebViewerNode):
                 'battery': node.battery,
                 'selected': node.selected_label,
                 'race': race,
+                'rb': node.rb,
             }).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
@@ -304,7 +330,7 @@ def make_handler(node: WebViewerNode):
                 '<div id="race" style="position:sticky;top:0;background:#001a00;'
                 'padding:8px;font-family:monospace;font-size:15px;'
                 'border-bottom:1px solid #464;z-index:10">레이스 상태 로딩중...</div>'
-                '<div id="bar" style="position:sticky;top:38px;background:#111;'
+                '<div id="bar" style="position:sticky;top:60px;background:#111;'
                 'padding:8px;font-family:monospace;font-size:14px;'
                 'border-bottom:1px solid #444;z-index:9">파라미터 로딩중...</div>'
                 '<script>'
@@ -320,7 +346,26 @@ def make_handler(node: WebViewerNode):
                 'padding:1px 8px;border-radius:4px;font-weight:bold">${o.v}</span>`;}'
                 'return `<span style="${st}">${k} <b style="color:#ff6">${o.v}</b></span>`;'
                 '}).join(" · ");'
-                'document.getElementById("race").innerHTML=`🏁 ${items}`;}'
+                # 회전교차로 해석 라인: 상태별 한글 문장 + 진행 게이지
+                'let rb=s.rb||{},rc=s.race||{};'
+                'let rst=String((rc["교차로"]||{}).v||"?");'
+                'let lane=(rc["차선기준"]||{}).v||"BOTH";'
+                'let yp=Number((rc["노랑px"]||{}).v)||0;'
+                'let ig=Math.abs(Number((rc["조향적분"]||{}).v)||0);'
+                'let thr=rb.yellow_arm_threshold||0,tgt=rb.steer_integral_target||0;'
+                'let rl="",rcol="#888";'
+                'if(rst.includes("disabled")){rl=`🔒 봉인됨 (enabled:false)`;}'
+                'else if(rst==="IDLE"){rl=`⏸ 출발 대기 (DRIVING 신호 기다림)`;rcol="#aaa";}'
+                'else if(rst==="ARMED"){let pct=thr?Math.min(100,Math.round(yp/thr*100)):0;'
+                'rl=`👀 진입 감시중 — 노란링 ${yp}/${thr} (${pct}%)`;rcol="#fd5";}'
+                'else if(rst==="LOOP"){let pct=tgt?Math.min(100,Math.round(ig/tgt*100)):0;'
+                'let lt=Number((rc["회전t"]||{}).v)||0;let ls=rb.loop_sec||0;'
+                'rl=`🌀 회전중 — <b>${lane}</b> 차선 추종 · 회전량 ${ig.toFixed(1)}/${tgt} (${pct}%)'
+                ' · ⏱ ${lt.toFixed(1)}/${ls}s`;rcol="#5cf";}'
+                'else if(rst==="EXIT"){rl=`↗ 탈출중 — <b>${lane}</b> 차선 + 바이어스 조향`;rcol="#fa0";}'
+                'else if(rst==="DONE"){rl=`✅ 완료 — 일반 주행 복귀 (${lane})`;rcol="#5f5";}'
+                'let rbline=`<span style="color:${rcol}">🌀 회전교차로: ${rl}</span>`;'
+                'document.getElementById("race").innerHTML=`🏁 ${items}<br>${rbline}`;}'
                 # 기존 파라미터 바
                 'let e=s.estop===true?"⛔E-STOP ":"";'
                 'let b=s.battery!==null?`🔋${s.battery.toFixed(0)}% `:"";'
