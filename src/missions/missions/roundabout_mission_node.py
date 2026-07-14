@@ -132,6 +132,12 @@ class RoundaboutMissionNode(Node):
         if msg.data == 'DRIVING' and self.drive_start_time is None:
             self.drive_start_time = self.get_clock().now()
             self.get_logger().info('start detected (traffic DRIVING) — roundabout timer begins')
+        # 랩 완료 정지(WAIT_GREEN 복귀) 시 재무장: 다음 랩에서 회전교차로를 다시 처리
+        elif msg.data == 'WAIT_GREEN' and self.state == DONE:
+            self.state = IDLE
+            self.drive_start_time = None
+            self.steer_integral = 0.0
+            self.get_logger().info('lap stop — roundabout re-armed for next lap')
 
     def yellow_callback(self, msg: Int32):
         self.yellow_pixels = msg.data

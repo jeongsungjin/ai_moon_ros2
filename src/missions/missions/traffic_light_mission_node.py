@@ -19,7 +19,7 @@
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Int32, String
 
 from drive_msgs.msg import DriveCommand
 
@@ -41,24 +41,30 @@ class TrafficLightMissionNode(Node):
         # 출발 직후 같은 신호등의 red 를 볼 수 있으므로 일정 시간 red 무시.
         # 트랙 1랩 예상 시간보다 확실히 짧게, 출발 신호등을 벗어날 시간보다 길게.
         self.declare_parameter('min_drive_time_sec', 20.0)
+        # 목표 랩 수: red 정지가 이 횟수에 도달해야 최종 FINISH latch.
+        # 그 전의 red 는 "랩 완료 정지" — green 재점등 시 다시 출발 (WAIT_GREEN 복귀)
+        self.declare_parameter('lap_count', 4)
 
         self.enabled = bool(self.get_parameter('enabled').value)
         publish_hz = float(self.get_parameter('publish_hz').value)
         self.green_stable_frames = int(self.get_parameter('green_stable_frames').value)
         self.red_stable_frames = int(self.get_parameter('red_stable_frames').value)
         self.min_drive_time_sec = float(self.get_parameter('min_drive_time_sec').value)
+        self.lap_count = int(self.get_parameter('lap_count').value)
 
         self.create_subscription(Bool, '/yolo/green', self.green_callback, 10)
         self.create_subscription(Bool, '/yolo/red', self.red_callback, 10)
 
         self.cmd_pub = self.create_publisher(DriveCommand, '/motor_sign', 10)
         self.state_pub = self.create_publisher(String, '/mission/traffic_state', 10)
+        self.lap_pub = self.create_publisher(Int32, '/mission/lap', 10)
 
         # 비활성 모드면 처음부터 DRIVING (정지 없이 주행 허용)
         self.state = DRIVING if not self.enabled else WAIT_GREEN
         self.green_count = 0
         self.red_count = 0
         self.drive_start_time = None
+        self.laps_done = 0      # red 정지(랩 완료) 누적
 
         self.timer = self.create_timer(1.0 / publish_hz, self.loop)
 
@@ -88,8 +94,18 @@ class TrafficLightMissionNode(Node):
                 return
         self.red_count = self.red_count + 1 if msg.data else 0
         if self.red_count >= self.red_stable_frames:
-            self.state = FINISH
-            self.get_logger().info('RED LIGHT — FINISH STOP (latched)')
+            self.laps_done += 1
+            self.red_count = 0
+            self.green_count = 0
+            if self.laps_done >= self.lap_count:
+                self.state = FINISH
+                self.get_logger().info(
+                    f'RED LIGHT — lap {self.laps_done}/{self.lap_count} FINAL, FINISH STOP (latched)')
+            else:
+                # 중간 랩 정지: green 재점등을 기다렸다가 다시 출발
+                self.state = WAIT_GREEN
+                self.get_logger().info(
+                    f'RED LIGHT — lap {self.laps_done}/{self.lap_count} done, waiting green to resume')
 
     # ---------------- 발행 루프 ----------------
     def loop(self):
@@ -110,6 +126,7 @@ class TrafficLightMissionNode(Node):
             cmd.flag = False    # 제어권 반납: 차선 주행
         self.cmd_pub.publish(cmd)
         self.state_pub.publish(String(data=self.state))
+        self.lap_pub.publish(Int32(data=self.laps_done))
 
 
 def main(args=None):

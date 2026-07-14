@@ -8,7 +8,14 @@
   - HSV 범위, 속도, 미션 임계값을 전부 ROS2 파라미터화 (트랙바 대체)
 """
 
+import array
+
 import cv2
+
+# 통합 스택(노드 5개×워커 4스레드)이 4코어에서 서로 선점하며 병렬 동기화 비용만 내는 것 방지
+# (실측: 경합 시 차선 파이프라인 4T 65ms vs 1T 31ms — 격리 시엔 4T 18ms vs 1T 22ms 로 손해 미미)
+cv2.setNumThreads(1)
+
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -49,13 +56,17 @@ class LaneDetectionNode(Node):
         self.declare_parameter('speed_fast', 0.5)
         self.declare_parameter('use_pid', False)              # 원본은 raw 오차 사용
         self.declare_parameter('publish_debug_image', True)
+        # 디버그 영상을 N프레임마다 1장만 발행 (인코딩+발행 비용 1/N) — 뷰어는 10fps 면 충분
+        self.declare_parameter('debug_every', 3)
+        # 영상이 이 시간 이상 끊기면 정지 명령 (카메라 사망 시 정지화면 주행 방지)
+        self.declare_parameter('image_stale_sec', 0.5)
         # 모니터/VNC 연결 시 imshow + HSV 트랙바 표시 (헤드리스 SSH 에서는 false 유지)
         self.declare_parameter('show_gui', False)
 
         # 차선 마스크에 포함할 색 선택 (새 트랙: 흰색 + 주황 차선)
         self.declare_parameter('lane_use_white', True)
         self.declare_parameter('lane_use_orange', True)
-        self.declare_parameter('lane_use_yellow', False)   # 구 트랙(노란 차선) 호환용
+        self.declare_parameter('lane_use_yellow', True)   # 구 트랙(노란 차선) 호환용
 
         # HSV 범위
         # (빨간 바닥 검출은 cv_detect/red_zone_node 로 분리 — 여기는 차선 색만)
@@ -85,6 +96,11 @@ class LaneDetectionNode(Node):
         self.speed_fast = float(self.get_parameter('speed_fast').value)
         self.use_pid = bool(self.get_parameter('use_pid').value)
         self.publish_debug_image = bool(self.get_parameter('publish_debug_image').value)
+        self.debug_every = max(1, int(self.get_parameter('debug_every').value))
+        self._debug_skip = 0
+        self.image_stale_sec = float(self.get_parameter('image_stale_sec').value)
+        self.last_image_time = self.get_clock().now()
+        self._stale_logged = False
         self.show_gui = bool(self.get_parameter('show_gui').value)
 
         self.lane_use_white = bool(self.get_parameter('lane_use_white').value)
@@ -99,6 +115,8 @@ class LaneDetectionNode(Node):
         self.upper_white = np.array(self.get_parameter('hsv_white_upper').value)
 
         # Perspective Transform (원본 좌표 유지)
+        # 파이프라인 입구에서 640x480 강제 리사이즈하므로 폭은 상수 (process 의 x 와 동일)
+        x = 640
         left_margin = 200
         top_margin = 340
         src_points = np.float32([
@@ -118,7 +136,7 @@ class LaneDetectionNode(Node):
         # ---------------- 통신 ----------------
         image_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
-            depth=10,
+            depth=1,   # 최신 프레임만 사용 — 처리 지연 시 스테일 프레임 역직렬화 낭비 방지 (10→1, 통합 25Hz)
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
@@ -196,6 +214,8 @@ class LaneDetectionNode(Node):
                 self.slidewindow.road_width = float(p.value)
             elif p.name == 'use_pid':
                 self.use_pid = bool(p.value)
+            elif p.name == 'debug_every':
+                self.debug_every = max(1, int(p.value))
             elif p.name in ('pid_kp', 'pid_ki', 'pid_kd'):
                 setattr(self.pid, p.name[4:], float(p.value))
             self.get_logger().info(f'param updated: {p.name} = {p.value}')
@@ -235,6 +255,7 @@ class LaneDetectionNode(Node):
         # 바이트만 저장 — 디코딩은 process() 에서 최신 프레임 1장만 수행
         # (30Hz 전수 디코딩이 단일 실행 스레드를 포화시켜 process 가 10Hz 에 묶였음)
         self.raw_image = msg.data
+        self.last_image_time = self.get_clock().now()
 
     def lane_topic_callback(self, msg: String):
         if msg.data in ('LEFT', 'RIGHT'):
@@ -252,6 +273,16 @@ class LaneDetectionNode(Node):
     def process(self):
         if self.raw_image is None:
             return
+        # 안전장치: 카메라가 죽으면 raw_image 가 마지막 프레임에 얼어붙어
+        # 정지 화면으로 계속 조향/주행하게 됨 → 영상이 끊기면 정지 명령
+        age = (self.get_clock().now() - self.last_image_time).nanoseconds * 1e-9
+        if age > self.image_stale_sec:
+            self.publish_ctrl_cmd(0.0, 0.0)
+            if not self._stale_logged:   # 진입 시 1회만 (30Hz 반복 로그는 그 자체가 CPU 비용)
+                self._stale_logged = True
+                self.get_logger().error(f'카메라 영상 {age:.1f}s 끊김 — 안전 정지 명령 발행')
+            return
+        self._stale_logged = False
         try:
             raw = np.frombuffer(self.raw_image, dtype=np.uint8)
             self.cv_image = cv2.imdecode(raw, cv2.IMREAD_COLOR)
@@ -324,14 +355,16 @@ class LaneDetectionNode(Node):
             cv2.imshow('Output Image', out_img)
             cv2.waitKey(1)
 
-        if self.publish_debug_image:
+        # N프레임당 1장만 인코딩/발행 (return 으로 빠지지 않게 블록 가드 — 아래에 코드가 추가돼도 안전)
+        self._debug_skip = (self._debug_skip + 1) % self.debug_every
+        if self.publish_debug_image and self._debug_skip == 0:
             ok, encoded = cv2.imencode('.jpg', out_img, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
             if ok:
                 dbg = CompressedImage()
                 dbg.header.stamp = self.get_clock().now().to_msg()
                 dbg.header.frame_id = 'lane_debug'
                 dbg.format = 'jpeg'
-                dbg.data = encoded.tobytes()
+                dbg.data = array.array('B', encoded.tobytes())   # fast-path (바이트 단위 검증 회피)
                 self.debug_image_pub.publish(dbg)
 
     def publish_ctrl_cmd(self, motor_msg, servo_msg):

@@ -13,8 +13,19 @@ CompressedImage(jpeg) 토픽을 그대로 MJPEG 스트림으로 중계하므로 
 """
 
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# 모니터링 도구는 주행 경로(camera/lane/planner/control)보다 CPU 우선순위를 낮춘다 —
+# 4코어 포화 시 뷰어가 인지 노드를 선점해 차선 처리율을 깎는 것 방지 (통합 25Hz 작업, 2026-07-13)
+# 코어 2,3 고정: YOLO(race.launch 에서 taskset 2,3)와 같은 저우선 구역으로 몰아
+# 코어 0,1 을 camera/lane/planner 전용에 가깝게 유지
+try:
+    os.nice(10)
+    os.sched_setaffinity(0, {2, 3})
+except OSError:
+    pass
 
 import rclpy
 from rclpy.node import Node
@@ -119,6 +130,7 @@ RACE_TOPICS = [
     ('차선중심', '/lane_x_location', Float32),
     ('차선기준', '/lane_topic', String),   # 슬라이딩윈도우 추종 기준 (LEFT/RIGHT/BOTH)
     ('회전t', '/roundabout/loop_elapsed', Float32),   # LOOP 경과 시간(초)
+    ('랩', '/mission/lap', Int32),                    # 완료 랩 수 (lap_count 대비)
 ]
 
 # 상태 바에 표시할 주요 파라미터 — 순서 = param_tuner 십자키 순서 = 가이드 순서

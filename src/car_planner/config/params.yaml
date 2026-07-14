@@ -9,22 +9,25 @@ camera_node:
     image_height: 480
     publish_hz: 30.0
     flip_180: false
-    jpeg_quality: 90
+    jpeg_quality: 85          # 90→85 (2026-07-13): enc 6.1→4.7ms, 구독 4곳 dec 5.2→4.4ms, HSV 픽셀 드리프트 ≤1.2% 실측
+                              # passthrough 시 미사용 (카메라 자체 압축 사용)
+    passthrough_mjpg: false   # C920 원본 JPEG 은 133KB/디코딩 21ms 로 구독자 5곳이 4.7배 비싸짐 (실측) — 재인코딩이 총비용 우위
 
 lane_detection_node:
   ros__parameters:
     image_topic: /camera/image/compressed
     process_hz: 30.0
     version: safe             # 'safe' | 'fast'
-    speed_safe: 0.178
+    speed_safe: 0.180
     speed_fast: 0.5
     use_pid: false
-    publish_debug_image: true  # 디버그 영상 끔 (+1~2fps) — 슬라이딩윈도우 확인할 땐 true 로
+    publish_debug_image: true  # 디버그 영상 끔 (+1~2fps) — 슬라이딩윈도우 확인할 땐 true
+    debug_every: 5             # 디버그 영상 N프레임당 1장 (25Hz 기준 5fps — 뷰어 확인용으론 충분) 로
     show_gui: false           # 모니터/VNC 연결 시 true → imshow + HSV 트랙바
     # 슬라이딩윈도우 튜닝값 (조종기 튜너/param set 으로 실시간 변경 가능)
-    sw_margin: 90             # 추적 윈도우 좌우 반폭
+    sw_margin: 94             # 추적 윈도우 좌우 반폭
     sw_win_h1: 380            # 초기 탐색창 윗변 y
-    sw_win_half: 140          # 초기 탐색창 반폭 (145/495 중심)
+    sw_win_half: 148          # 초기 탐색창 반폭 (145/495 중심)
     sw_circle_height: 280     # 조향 기준점(ld) y — 80~459
     sw_road_width: 0.5       # 차선 폭 비율
     sw_nwindows: 20           # 추적 윈도우 개수 (×20px = 추적 높이, ld 커버 필요)
@@ -36,11 +39,8 @@ lane_detection_node:
 
     # 차선 마스크에 들어갈 색 (일반 차선: 흰+주황 / 회전교차로 링: 노랑)
     lane_use_white: true
-    lane_use_orange: true
     lane_use_yellow: true     # 회전교차로 노란 링 추종에 필요 (HSV 는 현장에서 튜닝)
     # HSV 튜닝값 (조명 환경에 맞게 트랙에서 조정)
-    hsv_orange_lower: [5, 80, 80]     # 주황 차선 — 현장 튜닝 필요
-    hsv_orange_upper: [25, 255, 255]
     hsv_yellow_lower: [20, 110, 110]
     hsv_yellow_upper: [35, 255, 255]
     hsv_white_lower: [0, 0, 188]
@@ -51,11 +51,16 @@ lane_detection_node:
 aruco_detect_node:
   ros__parameters:
     image_topic: /camera/image/compressed
-    process_hz: 1.0
+    process_hz: 15.0             # 정지판정 지연 = appear_frames/hz (15Hz×2f=0.13s) — 1Hz 는 지연 2s 라 위험, 복원
     aruco_dict: DICT_6X6_250     # 보유 마커 실측 확정 (2026-07-11, ID=3 검출 ✓) — 대회 마커가 다르면 재확인
     min_marker_height_px: 20     # 반응 거리 (작으면 멀리서도 반응)
     target_ids: [-1]             # 반응할 마커 ID. [-1]=전체, 특정만: [3] 또는 [3, 7]
-    publish_debug_image: true
+    detect_downscale: 2          # 반해상도 검출 (비용 ~1/5 실측). 마커가 32px 미만으로 보여야 하면 1 로
+    publish_debug_image: false   # CPU 절약 (인코딩 3.6ms/f) — 아루코 디버깅할 땐 true
+    # 검출기 비용 프루닝 (실측 21.9→2.1ms/f, 40px 마커 검출 유지 검증) — 원복: 0.03 / 3 / 23
+    min_perimeter_rate: 0.08     # 둘레 8% 미만(≈변 6px) 후보 제거 — 6x6 는 24px 미만 디코딩 불가라 손실 없음
+    thresh_win_min: 23           # 적응 임계 멀티스케일(3/13/23) → 23 단일 (조명 극불균일 시 3 으로)
+    thresh_win_max: 23
 
 red_zone_node:
   ros__parameters:
@@ -68,7 +73,7 @@ red_zone_node:
     hsv_red2_upper: [179, 255, 255]
     on_pixel_threshold: 4000     # 이상이면 is_red=true
     off_pixel_threshold: 1500    # 미만이면 is_red=false (히스테리시스)
-    publish_debug_image: true
+    publish_debug_image: false   # CPU 절약 — 빨간구간 HSV 튜닝할 땐 true
 
 # ---------------- 미션 ----------------
 
@@ -79,6 +84,7 @@ traffic_light_mission:
     green_stable_frames: 1       # green 연속 N프레임 → 출발
     red_stable_frames: 1        # red 연속 N프레임 → 도착 정지
     min_drive_time_sec: 20.0     # 출발 후 이 시간 동안 red 무시 (1랩보다 짧게, 실측 조정)
+    lap_count: 1                 # 대회 규정 확정(현장): 1랩 + 마지막 신호등 red 정지 = 즉시 FINISH latch
 
 dynamic_obs_mission:
   ros__parameters:
@@ -91,7 +97,7 @@ dynamic_obs_mission:
 roundabout_mission:
   ros__parameters:
     enabled: true               # ⚠️ 현장에서 entry/loop/exit 튜닝 후 true
-    publish_hz: 30.0
+    publish_hz: 30.0            # EXIT 이 lane_angle+bias 를 자기 주기로 발행 → 탈출 조향 반응성 위해 30 유지
     entry_min_sec: 0.0           # 출발 후 이 시간 전엔 진입 감시 안 함
     entry_max_sec: 10000.0          # 도달 시 orange 무관 강제 진입 (시간 기반 fallback)
     use_yellow_arm: true
@@ -138,12 +144,15 @@ control_node:
 
 yolo_detect_node:
   ros__parameters:
-    model_path: /home/topst/ai_moon_ros2/models/yolo26n_traffic.pt   # 학습 후 배치 (실행 위치 기준 상대경로 or 절대경로)
+    # NCNN(ARM 최적화) — A72 실측: 640모델 323ms(2T) / 320모델 55ms. 원복: yolo26n_traffic_ncnn_model + imgsz 640
+    # ⚠️ 320 전환(2026-07-13, 통합 25Hz 확보): 먼 신호등 검출 거리 감소 가능 — /yolo/image/debug 로 거리 검증할 것
+    model_path: /home/topst/ai_moon_ros2/models/yolo26n_traffic_320_ncnn_model
     image_topic: /camera/image/compressed
     detect_topic: /traffic_sign
-    infer_hz: 5.0            # 보드 성능에 맞게 (버벅이면 5.0)
-    conf_threshold: 0.5
-    imgsz: 640
+    infer_hz: 2.5            # 320+1T 추론 ~250ms(통합 부하 실측) — 여유 확인 후 상향 검토
+    ncnn_threads: 1          # 통합 부하 실측: 2T 290ms vs 1T 251ms — 스레드풀 선점 낭비로 1T 가 더 빠름
+    conf_threshold: 0.7      # 0.5 에서 상향 — 320 모델이 빨간구간 바닥을 red 로 오인해 랩 오카운트 (2026-07-13 실주행). 실물 신호등은 0.9대라 여유
+    imgsz: 320               # 320 모델과 짝 (640 모델로 원복 시 640 으로)
     min_box_height_px: 30     # 이보다 작은(먼) 검출 무시 — 반응 거리 튜닝
     stable_frames: 3          # N회 연속 검출 시 발행 (오검출 억제)
     publish_debug_image: true

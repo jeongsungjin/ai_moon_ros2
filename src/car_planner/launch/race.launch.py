@@ -68,6 +68,9 @@ def generate_launch_description():
             package='yolo_detect', executable='yolo_detect_node',
             name='yolo_detect_node', output='screen', parameters=[params_file],
             condition=IfCondition(use_yolo),
+            # 추론(1T ~250ms) 버스트가 차선 파이프라인을 선점하지 않게 코어 2,3 + 저우선순위로 격리
+            # (통합 실측: 차선 23.6→26.1Hz, YOLO 2.5Hz 유지 — 2026-07-13)
+            prefix='taskset -c 2,3 nice -n 5',
         ),
         Node(
             package='cv_detect', executable='aruco_detect_node',
@@ -79,6 +82,8 @@ def generate_launch_description():
         ),
 
         # ---------------- 미션 ----------------
+        # 미션 노드는 저부하(10~30Hz 상태머신)라 nice+5 로도 지연 체감 없음 —
+        # 인지(camera/lane/aruco)·판단(planner)·구동(control)이 코어 경합에서 이기게 양보
         Node(
             package='missions', executable='traffic_light_mission_node',
             name='traffic_light_mission', output='screen',
@@ -87,14 +92,17 @@ def generate_launch_description():
                 # use_yolo:=false 면 green 대기 없이 바로 주행 (테스트용)
                 {'enabled': ParameterValue(use_yolo, value_type=bool)},
             ],
+            prefix='nice -n 5',
         ),
         Node(
             package='missions', executable='roundabout_mission_node',
             name='roundabout_mission', output='screen', parameters=[params_file],
+            prefix='nice -n 5',
         ),
         Node(
             package='missions', executable='dynamic_obs_mission_node',
             name='dynamic_obs_mission', output='screen', parameters=[params_file],
+            prefix='nice -n 5',
         ),
 
         # ---------------- 판단/제어 ----------------

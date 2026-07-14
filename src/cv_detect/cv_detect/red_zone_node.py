@@ -14,7 +14,14 @@
   /red_zone/image/debug (CompressedImage) 마스크 시각화
 """
 
+import array
+
 import cv2
+
+# 통합 스택(노드 5개×워커 4스레드)이 4코어에서 서로 선점하며 병렬 동기화 비용만 내는 것 방지
+# (실측: 경합 시 차선 파이프라인 4T 65ms vs 1T 31ms — 격리 시엔 4T 18ms vs 1T 22ms 로 손해 미미)
+cv2.setNumThreads(1)
+
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -55,7 +62,7 @@ class RedZoneNode(Node):
 
         image_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
-            depth=10,
+            depth=1,   # 최신 프레임만 사용 — 처리 지연 시 스테일 프레임 역직렬화 낭비 방지 (10→1, 통합 25Hz)
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
@@ -137,7 +144,7 @@ class RedZoneNode(Node):
                 dbg.header.stamp = self.get_clock().now().to_msg()
                 dbg.header.frame_id = 'red_zone_debug'
                 dbg.format = 'jpeg'
-                dbg.data = encoded.tobytes()
+                dbg.data = array.array('B', encoded.tobytes())   # fast-path (바이트 단위 검증 회피)
                 self.debug_pub.publish(dbg)
 
 

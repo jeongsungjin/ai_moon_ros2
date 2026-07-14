@@ -20,7 +20,18 @@
   → main_planner 가 SIGN 모드로 중재 (구조 이미 준비됨)
 """
 
+import array
+import os
+
+# OpenMP(torch/ncnn) 워커가 스핀 대기로 코어를 태우며 다른 노드를 굶기는 것 방지 —
+# 통합 스택 실측: 추론 340ms → 290ms(PASSIVE) → 251ms(+ncnn 1T). OpenMP 초기화(torch import) 전에 설정해야 유효
+os.environ.setdefault('OMP_WAIT_POLICY', 'PASSIVE')
+
 import cv2
+
+# cv2 는 이 노드에서 imdecode/imencode 만 사용 — 통합 스택 스레드 과다 방지 (NCNN 추론 스레드는 ncnn_threads 로 별도 제어)
+cv2.setNumThreads(1)
+
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -43,6 +54,9 @@ class YoloDetectNode(Node):
         self.declare_parameter('stable_frames', 3)        # N회 연속 검출 시 발행
         self.declare_parameter('publish_debug_image', True)
         self.declare_parameter('device', '')              # ''=자동, 'cpu', '0'(cuda) 등
+        # NCNN 추론 스레드 수 (0=제한 없음). A72 실측: 4T 204ms@363% / 2T 323ms@199% / 1T 602ms@102%
+        # — 스레드 늘려도 코어당 효율은 떨어짐. 다른 노드 굶기지 않게 기본 2
+        self.declare_parameter('ncnn_threads', 2)
 
         model_path = str(self.get_parameter('model_path').value)
         image_topic = str(self.get_parameter('image_topic').value)
@@ -66,6 +80,14 @@ class YoloDetectNode(Node):
                 'ultralytics 미설치. 보드에서:  pip3 install "ultralytics>=8.3.200"'
             )
 
+        # 전/후처리(letterbox·NMS)가 쓰는 torch 내부 스레드풀 제한 —
+        # 기본 4스레드가 통합 스택에서 서로 선점하며 추론 벽시계를 키움 (NCNN 스레드는 별도)
+        try:
+            import torch
+            torch.set_num_threads(1)
+        except ImportError:
+            pass
+
         import os
         if not os.path.exists(model_path):
             raise SystemExit(
@@ -74,7 +96,29 @@ class YoloDetectNode(Node):
                 '(또는 model_path 파라미터로 경로 지정)'
             )
 
-        self.model = YOLO(model_path, half=True)
+        # NCNN 스레드 제한은 conv 레이어가 "로드 시점" 값을 굽기 때문에 로드 전에 걸어야 함
+        ncnn_threads = int(self.get_parameter('ncnn_threads').value)
+        if ncnn_threads > 0 and 'ncnn' in model_path:
+            try:
+                import ncnn
+                _orig_net = ncnn.Net
+
+                class _NetLimited(_orig_net):
+                    def __init__(self, *a, **k):
+                        super().__init__(*a, **k)
+                        self.opt.num_threads = ncnn_threads
+                ncnn.Net = _NetLimited
+                self.get_logger().info(f'ncnn num_threads={ncnn_threads} 제한 적용')
+            except ImportError:
+                ncnn = None
+                self.get_logger().warning('ncnn 모듈 없음 — 스레드 제한 미적용')
+        else:
+            ncnn = None
+
+        # NCNN 폴더 경로도 그대로 로딩됨 (task 명시 필요). half 는 CPU 에서 무시되는 무효 옵션이라 제거
+        self.model = YOLO(model_path, task='detect')
+        if ncnn is not None:
+            ncnn.Net = _orig_net   # 패치는 로드 시점에만 필요 (conv 가 스레드 수를 구움) — 전역 원복
         self.device = device if device else None
         self.class_names = self.model.names  # {0:'green',1:'left',2:'red',3:'right'}
         self.get_logger().info(
@@ -84,7 +128,7 @@ class YoloDetectNode(Node):
         # ---------------- 통신 ----------------
         image_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
-            depth=10,
+            depth=1,   # 최신 프레임만 사용 — 처리 지연 시 스테일 프레임 역직렬화 낭비 방지 (10→1, 통합 25Hz)
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
@@ -101,7 +145,7 @@ class YoloDetectNode(Node):
             )
 
         # ---------------- 상태 ----------------
-        self.cv_image = None
+        self.raw_image = None
         self.candidate_class = None   # 연속 검출 추적 중인 클래스
         self.candidate_count = 0
 
@@ -114,16 +158,16 @@ class YoloDetectNode(Node):
         )
 
     def image_callback(self, msg: CompressedImage):
-        try:
-            raw = np.frombuffer(msg.data, dtype=np.uint8)
-            self.cv_image = cv2.imdecode(raw, cv2.IMREAD_COLOR)
-        except Exception as e:
-            self.get_logger().warning(f'Error decoding image: {e}')
+        # 저장만 하고 디코딩은 infer() 에서 최신 1장만
+        # (기존: 30Hz 전 프레임 디코딩 = 4.5ms×30 ≈ 13% 코어 낭비, 추론은 2.5Hz)
+        self.raw_image = msg.data
 
     def infer(self):
-        if self.cv_image is None:
+        if self.raw_image is None:
             return
-        frame = self.cv_image
+        frame = cv2.imdecode(np.frombuffer(self.raw_image, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            return
 
         results = self.model.predict(
             source=frame,
@@ -182,7 +226,7 @@ class YoloDetectNode(Node):
                 dbg.header.stamp = self.get_clock().now().to_msg()
                 dbg.header.frame_id = 'yolo_debug'
                 dbg.format = 'jpeg'
-                dbg.data = encoded.tobytes()
+                dbg.data = array.array('B', encoded.tobytes())   # fast-path (바이트 단위 검증 회피)
                 self.debug_pub.publish(dbg)
 
 
