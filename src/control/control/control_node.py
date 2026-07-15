@@ -33,6 +33,10 @@ class ControlNode(Node):
         self.declare_parameter('throttle_channel', 1)
         self.declare_parameter('steer_trim', 0.0)
         self.declare_parameter('max_throttle', 0.6)      # 안전 상한
+        # 스로틀 증가 슬루 (틱당 최대 증가량, 0=끔). 정지→가속의 돌진 전류가 배터리 전압을
+        # 순간 강하시켜 ESC 저전압 컷 깜빡임(모터 1~2초 사망) 유발 — bag 실측 2026-07-15.
+        # 0.012@30Hz = 0→0.21 을 약 0.6초에 램프. 감속/정지는 즉시 (안전 우선, 제한 없음)
+        self.declare_parameter('throttle_slew_up', 0.012)
         self.declare_parameter('servo_center_us', 1500)
         self.declare_parameter('servo_span_us', 500)
         self.declare_parameter('esc_neutral_us', 1500)
@@ -45,6 +49,8 @@ class ControlNode(Node):
         self.command_timeout = float(self.get_parameter('command_timeout').value)
         self.steer_trim = float(self.get_parameter('steer_trim').value)
         self.max_throttle = float(self.get_parameter('max_throttle').value)
+        self.throttle_slew_up = float(self.get_parameter('throttle_slew_up').value)
+        self._throttle_applied = 0.0
         self.dry_run = bool(self.get_parameter('dry_run').value)
 
         if command_hz <= 0.0:
@@ -115,6 +121,11 @@ class ControlNode(Node):
 
     def apply_actuation(self, steering, throttle):
         throttle = max(-self.max_throttle, min(self.max_throttle, float(throttle)))
+        # 증가만 슬루 제한 (돌진 전류로 인한 ESC 저전압 컷 방지). 감소/정지는 즉시.
+        if self.throttle_slew_up > 0.0:
+            if throttle > self._throttle_applied:
+                throttle = min(throttle, self._throttle_applied + self.throttle_slew_up)
+            self._throttle_applied = throttle
         if self.racer is None:
             return
         self.racer.set_steering_percent(float(steering))

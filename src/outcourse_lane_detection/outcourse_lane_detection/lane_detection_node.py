@@ -25,7 +25,7 @@ from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Bool, Float32, Int32, String
 
 from drive_msgs.msg import DriveCommand
-from lane_detection.slidewindow import SlideWindow
+from outcourse_lane_detection.slidewindow import SlideWindow
 
 HALF_FRAME_W = 320.0    # 화면 반폭 (640/2) — 오차 정규화 분모 (조향 목표와는 별개)
 MORPH_BAR_W = 3         # 세로 막대 커널 가로폭 — "세로 구조만 생존" 판정 기준
@@ -49,7 +49,7 @@ class PID:
 
 class LaneDetectionNode(Node):
     def __init__(self):
-        super().__init__('lane_detection_node')
+        super().__init__('outcourse_lane_detection_node')
 
         # ---------------- 파라미터 ----------------
         self.declare_parameter('image_topic', '/camera/image/compressed')
@@ -63,6 +63,8 @@ class LaneDetectionNode(Node):
         self.declare_parameter('debug_every', 3)
         # 영상이 이 시간 이상 끊기면 정지 명령 (카메라 사망 시 정지화면 주행 방지)
         self.declare_parameter('image_stale_sec', 0.5)
+        # 아웃코스 안전장치: 차선을 연속으로 잃은 채 마지막 조향값으로 주행하지 않는다.
+        self.declare_parameter('detection_stop_sec', 0.5)
         # 모니터/VNC 연결 시 imshow + HSV 트랙바 표시 (헤드리스 SSH 에서는 false 유지)
         self.declare_parameter('show_gui', False)
 
@@ -163,8 +165,11 @@ class LaneDetectionNode(Node):
         self.debug_every = max(1, int(self.get_parameter('debug_every').value))
         self._debug_skip = 0
         self.image_stale_sec = float(self.get_parameter('image_stale_sec').value)
+        self.detection_stop_sec = float(self.get_parameter('detection_stop_sec').value)
         self.last_image_time = self.get_clock().now()
         self._stale_logged = False
+        self._detection_invalid_since = None
+        self._detection_lost_sec = 0.0
         self.show_gui = bool(self.get_parameter('show_gui').value)
 
         self.lane_use_white = bool(self.get_parameter('lane_use_white').value)
@@ -253,6 +258,18 @@ class LaneDetectionNode(Node):
         self.x_limited_pub = self.create_publisher(Float32, '/lane_x_limited', 1)
         self.x_location_pub = self.create_publisher(Float32, '/lane_x_location', 1)
         self.lane_error_pub = self.create_publisher(Float32, '/lane_error', 1)
+        # 아웃코스 기본 제어 벡 진단: 이진화→필터→BEV→경계선 선택 단계별 관측값.
+        self.mask_raw_pixel_pub = self.create_publisher(Int32, '/lane/mask_pixels_raw', 1)
+        self.mask_filtered_pixel_pub = self.create_publisher(
+            Int32, '/lane/mask_pixels_filtered', 1)
+        self.bev_pixel_pub = self.create_publisher(Int32, '/lane/bev_pixels', 1)
+        self.detect_valid_pub = self.create_publisher(Bool, '/lane/detection_valid', 1)
+        self.detected_line_pub = self.create_publisher(String, '/lane/detected_line', 1)
+        self.left_seed_pixel_pub = self.create_publisher(Int32, '/lane/left_seed_pixels', 1)
+        self.right_seed_pixel_pub = self.create_publisher(Int32, '/lane/right_seed_pixels', 1)
+        self.tracked_windows_pub = self.create_publisher(Int32, '/lane/tracked_windows', 1)
+        self.center_target_pub = self.create_publisher(Float32, '/lane/center_target', 1)
+        self.speed_target_pub = self.create_publisher(Float32, '/lane/speed_target', 1)
         self.ring_valid_pub = self.create_publisher(Bool, '/ring/tracking_valid', 1)
         self.ring_source_pub = self.create_publisher(String, '/ring/tracking_source', 1)
         self.ring_pixel_pub = self.create_publisher(Int32, '/ring/chroma_pixels', 1)
@@ -563,6 +580,7 @@ class LaneDetectionNode(Node):
             ring_source = 'hsv'
 
         # 컬러 필터 이미지는 GUI 표시용으로만 필요 (와핑 입력으로는 미사용)
+        mask_raw_pixels = int(cv2.countNonZero(mask_lane))
         filtered_img = (cv2.bitwise_and(frame_resized, frame_resized, mask=mask_lane)
                         if self.show_gui else None)
 
@@ -598,6 +616,9 @@ class LaneDetectionNode(Node):
             if small:
                 cv2.drawContours(roi_m, small, -1, 0, -1)
 
+        self.mask_raw_pixel_pub.publish(Int32(data=mask_raw_pixels))
+        self.mask_filtered_pixel_pub.publish(
+            Int32(data=int(cv2.countNonZero(mask_lane))))
 
         # 슬라이딩윈도우 입력: 1채널 차선 마스크만 와핑
         # (기존: 3채널 컬러 와핑 + cvtColor + 미사용 yellow 와핑 → 10fps CPU 병목이라 제거)
@@ -610,6 +631,7 @@ class LaneDetectionNode(Node):
         if m > 0:
             warped_lane[:, :m] = 0
             warped_lane[:, -m:] = 0
+        self.bev_pixel_pub.publish(Int32(data=int(cv2.countNonZero(warped_lane))))
 
         # 이진화 + 슬라이딩 윈도우
         bin_img = np.zeros_like(warped_lane)
@@ -619,6 +641,15 @@ class LaneDetectionNode(Node):
                                if self.ring_outer_tracking
                                and self.slidewindow.track_centers else None)
         out_img, x_location, _ = self.slidewindow.slidewindow(bin_img)
+        self.detect_valid_pub.publish(
+            Bool(data=bool(self.slidewindow.detection_valid)))
+        self.detected_line_pub.publish(String(data=self.slidewindow.current_line))
+        self.left_seed_pixel_pub.publish(
+            Int32(data=int(self.slidewindow.left_initial_pixel_count)))
+        self.right_seed_pixel_pub.publish(
+            Int32(data=int(self.slidewindow.right_initial_pixel_count)))
+        self.tracked_windows_pub.publish(
+            Int32(data=int(self.slidewindow.tracked_window_count)))
         if (self.roundabout_loop and self.ring_seeded
                 and not self.ring_outer_tracking
                 and self.slidewindow.detection_valid):
@@ -664,6 +695,17 @@ class LaneDetectionNode(Node):
         self.ring_valid_pub.publish(Bool(data=bool(ring_valid)))
         self.ring_source_pub.publish(String(data=ring_source))
         self.ring_pixel_pub.publish(Int32(data=ring_chroma_pixels))
+        # slidewindow는 미검출 시 마지막 x를 반환하므로 x 값만으로는 차선 손실을 알 수 없다.
+        # 실제 detection_valid를 시간으로 누적해 장기 손실 때만 정지한다.
+        now = self.get_clock().now()
+        if self.slidewindow.detection_valid:
+            self._detection_invalid_since = None
+            self._detection_lost_sec = 0.0
+        else:
+            if self._detection_invalid_since is None:
+                self._detection_invalid_since = now
+            self._detection_lost_sec = (
+                now - self._detection_invalid_since).nanoseconds * 1e-9
         self.x_raw_pub.publish(Float32(data=float(x_location)))
 
         # 폭주 가드 (2026-07-15 bag 실측: polyfit 실패 순간 x_location 이 -8124 ~ +17928 로
@@ -706,6 +748,7 @@ class LaneDetectionNode(Node):
         # 조향: 원본은 raw 픽셀 오차 (PID 는 옵션). 목표 x 는 파라미터 (좌회전 트랙 공략:
         # lane_center_x > 320 = 상시 좌측 붙어 달리기)
         error = x_location - self.lane_center_x
+        self.center_target_pub.publish(Float32(data=float(self.lane_center_x)))
         self.lane_error_pub.publish(Float32(data=float(error)))
         self.steer = self.pid.pid_control(error) if self.use_pid else float(error)
 
@@ -715,6 +758,10 @@ class LaneDetectionNode(Node):
         if self.curve_slow_gain > 0.0:
             self.motor *= max(self.curve_slow_floor,
                               1.0 - self.curve_slow_gain * abs(error) / HALF_FRAME_W)
+        if (self.detection_stop_sec > 0.0
+                and self._detection_lost_sec >= self.detection_stop_sec):
+            self.motor = 0.0
+        self.speed_target_pub.publish(Float32(data=float(self.motor)))
 
         self.publish_ctrl_cmd(self.motor, self.steer)
 

@@ -42,7 +42,7 @@ from std_msgs.msg import Bool, String
 
 class YoloDetectNode(Node):
     def __init__(self):
-        super().__init__('yolo_detect_node')
+        super().__init__('outcourse_yolo_detect_node')
 
         self.declare_parameter('model_path', 'models/yolo26n_traffic.pt')
         self.declare_parameter('image_topic', '/camera/image/compressed')
@@ -286,3 +286,4 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+

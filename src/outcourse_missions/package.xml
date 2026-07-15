@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>outcourse_missions</name>
+  <version>1.0.0</version>
+  <description>Outcourse-only fork mission nodes</description>
+  <maintainer email="smoony0226ai@kookmin.ac.kr">seongjin</maintainer>
+  <license>Apache-2.0</license>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>

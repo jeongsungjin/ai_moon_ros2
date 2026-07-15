@@ -69,6 +69,9 @@ source install/setup.bash
 # 전체 스택 (실차)
 ros2 launch car_planner auto_driving.launch.py
 
+# 아웃코스 전체 스택 (갈림길 left/right 표지판에 따라 차선 선택)
+ros2 launch car_planner outcourse.launch.py
+
 # 차선 주행만
 ros2 launch car_planner lane_drive.launch.py
 

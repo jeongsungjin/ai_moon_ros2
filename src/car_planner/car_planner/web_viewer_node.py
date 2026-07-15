@@ -129,6 +129,8 @@ RACE_TOPICS = [
     ('조향적분', '/roundabout/steer_integral', Float32),
     ('차선중심', '/lane_x_location', Float32),
     ('차선기준', '/lane_topic', String),   # 슬라이딩윈도우 추종 기준 (LEFT/RIGHT/BOTH)
+    ('갈림길상태', '/mission/fork_state', String),
+    ('갈림길방향', '/mission/fork_direction', String),
     ('회전t', '/roundabout/loop_elapsed', Float32),   # LOOP 경과 시간(초)
     ('랩', '/mission/lap', Int32),                    # 완료 랩 수 (lap_count 대비)
 ]

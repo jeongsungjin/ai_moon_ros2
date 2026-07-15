@@ -53,6 +53,11 @@ class SlideWindow:
         # 반환하므로 값만 보고는 신뢰도를 알 수 없다.
         self.detection_valid = False
         self.initial_pixel_count = 0
+        # 벡 진단용: 초기 좌/우 후보 강도와 실제 픽셀을 얻은 추적 윈도우 수.
+        # 제어에는 사용하지 않고 lane_detection_node가 토픽으로 내보낸다.
+        self.left_initial_pixel_count = 0
+        self.right_initial_pixel_count = 0
+        self.tracked_window_count = 0
         # 색으로 선의 정체성이 이미 확정된 경우 화면 좌/우 위치와 의미를 분리한다.
         # 예: 회전 중 안쪽 노란 링(LEFT)이 화면 오른쪽으로 넘어와도 RIGHT로 바꾸지 않는다.
         self.force_line_identity = None
@@ -120,6 +125,9 @@ class SlideWindow:
             cv2.rectangle(out_img, (center-self.temporal_margin, y_lo),
                           (center+self.temporal_margin, y_hi), (0, 200, 0), 1)
         self.initial_pixel_count = hits
+        self.left_initial_pixel_count = hits if identity == "LEFT" else 0
+        self.right_initial_pixel_count = hits if identity == "RIGHT" else 0
+        self.tracked_window_count = hits
         min_hits = min(self.temporal_min_windows, len(centers))
         fit_valid = hits >= min_hits
         if fit_valid:
@@ -151,6 +159,9 @@ class SlideWindow:
         return out_img, self.x_previous, self.current_line
 
     def slidewindow(self, img):
+        self.left_initial_pixel_count = 0
+        self.right_initial_pixel_count = 0
+        self.tracked_window_count = 0
         x_location = 320
         out_img = np.dstack((img, img, img)) * 255
         height, width = img.shape[0], img.shape[1]
@@ -248,6 +259,8 @@ class SlideWindow:
             line_flag = 3
 
         self.initial_pixel_count = left_cnt + right_cnt
+        self.left_initial_pixel_count = left_cnt
+        self.right_initial_pixel_count = right_cnt
         self.detection_valid = line_flag in (1, 2)
 
         y_current = height - 1
@@ -291,6 +304,7 @@ class SlideWindow:
                 good_x = bx[m]
 
                 if len(good_x) > minpix:
+                    self.tracked_window_count += 1
                     x_current = int(np.mean(good_x))
                 elif len(left_x) > 0:
                     if p_left is None:
@@ -321,6 +335,7 @@ class SlideWindow:
                 good_x = bx[m]
 
                 if len(good_x) > minpix:
+                    self.tracked_window_count += 1
                     x_current = int(np.mean(good_x))
                 elif len(right_x) > 0:
                     if p_right is None:
@@ -338,3 +353,4 @@ class SlideWindow:
         if self.temporal_enabled and frame_centers:
             self.track_centers = frame_centers
         return out_img, x_location, self.current_line
+

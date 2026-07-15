@@ -57,12 +57,18 @@ class MainPlannerNode(Node):
         # 스로틀 변환: 원본 speed(0.2~0.5) -> percent
         self.declare_parameter('throttle_gain', 1.0)
         self.declare_parameter('max_throttle', 0.6)
+        # 미션 노드가 준비되기 전에 기본 LANE 명령이 통과하는 기동 레이스 차단.
+        # SIGN 첫 메시지는 WAIT_GREEN 정지 또는 enabled=false의 해제 상태를 모두 표현하므로,
+        # 이것을 수신하기 전에는 planner가 자체적으로 0 출력을 유지한다.
+        self.declare_parameter('startup_require_sign', True)
 
         self.control_topic = str(self.get_parameter('control_topic').value)
         self.steering_gain = float(self.get_parameter('steering_gain').value)
         self.invert_steering = bool(self.get_parameter('invert_steering').value)
         self.throttle_gain = float(self.get_parameter('throttle_gain').value)
         self.max_throttle = float(self.get_parameter('max_throttle').value)
+        self.startup_require_sign = bool(self.get_parameter('startup_require_sign').value)
+        self._sign_seen = False
 
         # 미션 명령 저장소
         self.ctrl_lane = MissionCommand()
@@ -105,6 +111,8 @@ class MainPlannerNode(Node):
                 self.invert_steering = bool(p.value)
             elif p.name == 'max_throttle':
                 self.max_throttle = float(p.value)
+            elif p.name == 'startup_require_sign':
+                self.startup_require_sign = bool(p.value)
             self.get_logger().info(f'param updated: {p.name} = {p.value}')
         return SetParametersResult(successful=True)
 
@@ -115,6 +123,8 @@ class MainPlannerNode(Node):
             cmd.speed = msg.speed
             cmd.angle = msg.angle
             cmd.flag = msg.flag
+            if name == 'SIGN':
+                self._sign_seen = True
         return cb
 
     def lane_callback(self, msg: DriveCommand):
@@ -124,6 +134,16 @@ class MainPlannerNode(Node):
 
     # ---------------- 메인 루프 ----------------
     def loop(self):
+        # traffic mission의 최초 상태가 도착하기 전에는 lane을 기본값으로 선택하지 않는다.
+        # 노드 기동 순서와 CPU 부하에 무관하게 모터 출력 0을 보장한다.
+        if self.startup_require_sign and not self._sign_seen:
+            self.mode = 'STARTUP_HOLD'
+            self.motor = 0.0
+            self.steer = 0.0
+            self.mode_pub.publish(String(data=self.mode))
+            self.publish_ctrl_cmd(0.0, 0.0)
+            return
+
         # MODE 판별: flag 가 켜진 최고 우선순위 미션
         self.mode = 'LANE'
         selected = self.ctrl_lane

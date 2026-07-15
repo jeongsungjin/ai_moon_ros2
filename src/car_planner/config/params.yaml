@@ -23,20 +23,19 @@ lane_detection_node:
     process_hz: 25.0          # 22→25 (2026-07-14): 카메라도 25 로 내려 25/25 밸런스 — 인지 신선도 = min(둘)
                               # (30Hz 풀가동 시 lane 이 CPU 82% 점유해 카메라를 20Hz 로 밀어냈던 이력 참고)
     version: safe             # 'safe' | 'fast'
-    speed_safe: 0.18
+    speed_safe: 0.22          # 07시 최적 상태 복원 (curve_slow 와 세트)
+
     speed_fast: 0.5
     use_pid: false
     publish_debug_image: true  # 디버그 영상 끔 (+1~2fps) — 슬라이딩윈도우 확인할 땐 true
     debug_every: 5             # 디버그 영상 N프레임당 1장 (25Hz 기준 5fps — 뷰어 확인용으론 충분) 로
     show_gui: false           # 모니터/VNC 연결 시 true → imshow + HSV 트랙바
     # 슬라이딩윈도우 튜닝값 (조종기 튜너/param set 으로 실시간 변경 가능)
-    sw_margin: 75             # 추적 윈도우 좌우 반폭
+    sw_margin: 75             # 추적 윈도우 좌우 반폭. 60 실험은 실주행 51점(지터/지그재그 2~3배)
+                              # 으로 기각(2026-07-15 03:28 bag) — 좁은 박스가 선을 상시 놓침/재획득
     sw_win_h1: 380            # 초기 탐색창 윗변 y
     sw_win_half: 110          # 초기 탐색창 반폭 (145/495 중심)
-    sw_circle_height: 220     # 조향 기준점(ld) y — 80~459. 280→240→220 (2026-07-15): 룩어헤드가
-                              # 멀수록 미리보기 오차가 조향을 대신 만들어 차체는 중앙 유지 (커브
-                              # 이탈 억제). ⚠️ 20px 격자: (460-ld)/20+1 ≤ nwindows 필수 (220→13개)
-                              # 오프라인 검증: 320고정 2%/지터 26.8px — 240과 동급
+    sw_circle_height: 260     # 최종(2026-07-15 아침 실증): 200=코너컷팅, 290=출구 진동(요 감쇠 상실), 280=바깥 밀림 — 260 이 균형점
     sw_road_width: 0.5       # 차선 폭 비율
     sw_nwindows: 14          # 추적 윈도우 개수 (×20px = 추적 높이). ⚠️ 윈도우 계단이
                              # circle_height 에 닿아야 x_location 이 갱신됨 — 10개는 y=280 에서
@@ -54,6 +53,16 @@ lane_detection_node:
     # adaptive 모드 /yellow_pixels = BGR 산술 노랑 카운트 (min(R,G)-B > 임계, ROI y>=300)
     # bag 실측(run_0714_163731): T=60 에서 흰선 구간 0 / 링 접근 2633 / 링 위 10428 / 주황바닥 0
     yellow_chroma_thresh: 60
+    ring_use_chroma: false      # paired 색상 인계 실패로 비활성; 최신 bag grayscale LEFT 유효율 99.3%
+    ring_chroma_min_pixels: 120 # 이보다 적으면 흰선으로 폴백하지 않고 tracking invalid
+    ring_temporal_margin: 60    # 링 전용 이전곡선 게이트(일반 sw_margin과 별개), 전역 재획득 금지
+    ring_temporal_min_windows: 3 # 원형 선이 짧게 보이는 프레임 허용
+    ring_adaptive_c: -40        # seed 이후 링 주변 grayscale 전용; 일반 주행 -60은 유지
+    ring_chroma_gate_dilate: 21 # adaptive 형상 허용 폭; 흰 외곽선까지 번지지 않게 제한
+    ring_x_valid_min: 40.0      # 화면 가장자리 접근 시 완전 이탈 전 invalid 처리
+    ring_x_valid_max: 600.0
+    ring_outer_anchor_tolerance: 120.0 # 실측 첫 정상 인계 변화 85px 허용, 그 이상 인접 아웃코스 creep 차단
+    yellow_roi_y0: 400        # 노랑 카운트 ROI (최하단 80px = 차 바로 앞) — "보임"이 아니라 "도착"을 잼 (조기 진입 방지)
     # BEV 좌우 가장자리 N px 제거 — 트랙 밖 배경(바닥 격자선) 침입 차단 (0=끔)
     # C 조이기로는 분리 불가 실측(배경이 차선급 대비) → 위치 기반 차단
     bev_edge_mask: 60
@@ -62,18 +71,28 @@ lane_detection_node:
     morph_open: 0
     # 면적 기반 블롭 제거 (0=끔): 임계 미만 면적 성분 통째 삭제 — 차선 실선 무손상.
     # bag 실측(500): 노이즈 -16% vs 파편 -8%, 0.3ms. 1000 이상은 효과 정체.
-    min_blob_area: 500
+    min_blob_area: 800
+    # 높이 기반 블롭 제거 (0=끔): 세로 <80px 성분 삭제 — 흰 점선(20~60px) 제거, 실선(170px+) 보존
+    min_blob_height: 80
     # x_location EMA (새 샘플 가중치, 1.0=끔). bag 실측: 인지 지터 40px/프레임(단선 전환
     # 점프) → 지그재그의 원신호. 0.5=지터 절반/지연 1프레임. 커브 둔하면 0.7
     x_ema_alpha: 0.5
     # x_location 프레임당 최대 변화 (0=끔). 트랙 옆 사람 오인 1프레임 급락(247→67, t=45.6s
     # bag 실측) 방어 — 참 변화는 60px/f(1500px/s) 을 넘을 수 없음
     x_max_step: 60
+    # 급점프 완전 홀드 (0=끔 — 실주행에서 커브 정상 변화에도 걸려 휘청임 유발, 기각 2026-07-15)
+    x_hold_frames: 0
     # 커브 감속 (0=끔): speed ×= 1 - gain×|err|/320, 하한 60%. P제어 커브 정상상태 오차
     # (~100px@gain0.0035)를 게인 인상 없이 완화하는 최후의 보루 — err 100px 시 속도 81%
     curve_slow_gain: 0.6
-    adaptive_block: 75        # 국소 평균 윈도우 (홀수, 차선 폭의 2배쯤 — 하단 선폭 25~60px)
-    adaptive_c: -31           # 임계 = 국소평균 − C → 절대값 클수록 엄격 (2026-07-14 현장 확정: 경계 선명)
+    # 감속 하한 (speed_safe 비율). 모터 최소 구동 스로틀 = 0.18 실측(2026-07-15)
+    # → floor × speed_safe ≥ 0.18 이어야 커브에서 안 멈춤. 0.22×0.82 = 0.18.
+    curve_slow_floor: 0.91    # 0.86→0.91 (2026-07-15): 평지 문턱 0.18 실측이나 조향 꺾인 커브는 저항 증가로 실효 문턱 상승 — 커브 중 스톨 재발 방지 (하한 0.200)
+    # 조향 목표 x (320=화면 중앙). 좌회전 전용 트랙 공략: >320 = 상시 좌측(안쪽) 붙어 달리기.
+    # 트림 0.13 교정 후 재캘리브레이션(08:45): 이 카메라의 실측 중앙 ≈ 300, +10 좌회전 마진
+    lane_center_x: 340.0
+    adaptive_block: 113       # 75→113 (2026-07-15 mhsv 재실측 — 배경 오인 감소)
+    adaptive_c: -60           # -31→-60 (2026-07-15 mhsv 재실측 — 초엄격, 배경 차단. 어두운 구간 차선 끊기면 -45 로)
 
     # 차선 마스크에 들어갈 색 (adaptive=false 일 때의 HSV 경로 / 회전교차로 링: 노랑)
     lane_use_white: true
@@ -120,8 +139,14 @@ traffic_light_mission:
     enabled: true                # false = green 대기 없이 바로 주행 (race.launch use_yolo:=false 가 자동 제어)
     publish_hz: 10.0
     green_stable_frames: 1       # green 연속 N프레임 → 출발
-    red_stable_frames: 1        # red 연속 N프레임 → 도착 정지
-    min_drive_time_sec: 20.0     # 출발 후 이 시간 동안 red 무시 (1랩보다 짧게, 실측 조정)
+    red_stable_frames: 1        # 3→1 (2026-07-15): 신호가 도중에 안 바뀌는 규정 + 오발은 5중 게이트(60s/구간통과/크기/종횡비/발광)가 담당 — 1틱 즉시 정지로 정지선 정확도 확보
+    min_drive_time_sec: 60.0     # 20→60 (2026-07-15 리허설: 링 회전 중 +20.4s 에 출발 신호등 red 를 결승으로 오판, 영구정지 — 신호등이 시야에서 완전히 빠진 뒤까지 무시. 랩타임(>60s 추정) 실측 후 재조정)
+    red_zone_fallback_sec: 90.0  # 빨간구간(아루코) 통과 이벤트 전 red 무시 — 구간 인지 실패 시에도 90s 뒤엔 유효 (미정지 벌점 방지 백업)
+    # green 발광 패스트패스: 모델 우회 픽셀 직독 (WAIT_GREEN 전용, 출발 즉시 비활성) — 즉발 출발
+    startup_ignore_sec: 6.5      # 기동 후 이 시간 동안 green 무시 — control 5초 지연 기동보다 길게 (진입창 소진 사고 방지)
+    green_glow_fast: true
+    glow_roi_y0: 200          # 화면 하단만 (상단 대형 스크린 오발 차단 — 신호등은 바닥 8cm)
+    glow_min_px: 22           # 실전 실측 36px (임계 35 와 마진 1px) → 22 로 여유 확보
     lap_count: 1                 # 대회 규정 확정(현장): 1랩 + 마지막 신호등 red 정지 = 즉시 FINISH latch
 
 dynamic_obs_mission:
@@ -137,19 +162,38 @@ roundabout_mission:
   ros__parameters:
     enabled: true               # ⚠️ 현장에서 entry/loop/exit 튜닝 후 true
     publish_hz: 30.0            # EXIT 이 lane_angle+bias 를 자기 주기로 발행 → 탈출 조향 반응성 위해 30 유지
-    entry_min_sec: 0.0           # 출발 후 이 시간 전엔 진입 감시 안 함
-    entry_max_sec: 6.0           # 강제 진입 백업 (회전교차로가 출발 직후라 6s — 실주행으로 출발→링 도달 시간 확인 후 조정)
-    use_yellow_arm: true
-    yellow_arm_threshold: 1000   # /yellow_pixels(BGR 노랑 카운트) 진입 임계 — bag 실측(2026-07-14):
+    entry_min_sec: 5.5           # 이 전엔 arm 안 함 (조기 오발 차단)
+    entry_lane_side_sec: 15.0    # 출발 직후 왼쪽 우선 인지 시간 (회전교차로 진입 유도, 0=끔. 2026-07-15)
+    entry_max_sec: 9.0           # 백업 여유 확대 (출발 램프로 초반 가속 느려짐 — 주 트리거는 노랑 1300)
+    # 진입 부스트: LOOP 시작 직후 차선조향+좌바이어스로 최급 곡률 진입구 통과 (EXIT 거울상, 2026-07-15)
+    entry_boost_sec: 2.5         # 1.5→2.5 (2026-07-15): 부스트 종료 핸드오프가 커브 중간에 떨어져 휘청임 — 안정 구간까지 연장
+    entry_angle: -120.0          # 음수=좌. 진입이 모자라면 -150, 과하면 -90
+    entry_speed: 0.2             # 부스트 중 속도
+    entry_angle_limit: 100.0     # run_215731 +0.54 풀좌 포화 재현; 안정 진입 실측 상한 steering +0.30 복구
+    entry_boost_fade_sec: 1.0    # 부스트 마지막 1초 바이어스 선형 감쇠 — 스텝 핸드오프 불연속 제거 (0=구동작, 2026-07-15)
+    loop_x_ema: 0.35             # LOOP 전용 x EMA 강화 (링 지터 ±40~70px → 조향 스윙 억제), DONE 원복. 0=끔 (2026-07-15)
+    loop_angle_bias: -40.0       # 부스트 후 원형 곡률 유지 feedforward → steering 약 +0.12
+    loop_angle_limit: 180.0      # lane+bias 합산 좌조향 하한 → steering 최대 약 +0.54
+    loop_min_curve_angle: 0.0    # 고정 하한 폐기; paired-boundary 폐루프가 곡률 결정
+    tracking_degraded_speed: 0.18 # LOOP 추적 불안/재확인 중 저속
+    tracking_stop_sec: 0.12       # 연속 손실 시 선제 정지 (0.30은 이탈 후 정지 실측)
+    tracking_recover_sec: 0.15    # 동일 링 안정 확인 후 정상 속도 복귀
+    seed_crawl_speed: 0.18        # seed 관측범위 확보용 제한 저속
+    seed_crawl_angle_limit: 60.0  # 최종 조향 약 ±0.18 이내, 조기 급회전 방지
+    seed_crawl_max_sec: 1.20      # 이 안에 seed 실패하면 정지
+    use_yellow_arm: true         # 재활성(2026-07-15 오후): 진입시각이 6.4~7.0s 로 출렁(전압따라 속도 변동) — 위치 기반 트리거로 전환. bag 검증: 흰선 0 / 링 접근 2633
+    yellow_arm_threshold: 800    # 하단 ROI(y>400) 기준 재실측: 접근 중 0 → 입구 도달 2924 계단 — 800 이면 확실
+    entry_trigger_delay_sec: 0.8 # 0.5 는 살짝 이름(실주행) — 0.1s ≈ 5~6cm
                                  # 흰선 구간 0 / 링 접근 중앙값 2633 → 1000 이면 접근 초입에 확실히 발동
     loop_done_mode: both         # 'time' | 'steer' | 'both'
-    loop_sec: 30.0                # 1회전 소요 시간 (실측!)
-    steer_integral_target: 30.0   # |조향%| 적분 목표 (실측! /roundabout/steer_integral 관찰)
+    loop_sec: 15.0                # 시간 안전망 (~1.5바퀴 상당). 주 판정은 적분 — bag 추정 재조정 2026-07-15
+    steer_integral_target: 2.7   # 4.5→2.7 (2026-07-15 bag 실측 run_161501): 1바퀴(진입길목→길목 재도달 12.0s) 적분 2.85 — 길목 직전 EXIT 발동. 4.5 는 도달 불가(22s+)라 항상 타임아웃으로만 탈출했음
     loop_lane_side: LEFT         # 회전 중 추종 차선 (안쪽. 정방향 반시계 기준 LEFT)
     exit_mode: lane_steer        # 'lane_steer'(차선+바이어스, 권장) | 'lane' | 'steer'(고정)
     exit_lane_side: RIGHT        # 탈출 시 추종 차선 (바깥쪽)
     exit_angle: -100.0           # lane_steer: 차선 조향에 가산할 바이어스 / steer: 고정 조향
-    exit_speed: 0.178              # 탈출 속도 (0 이하면 차선 속도 그대로)
+    exit_speed: 0.2              # 탈출 속도 (0 이하면 차선 속도 그대로). 0.178→0.2:
+                                 # 모터 최소 구동 0.18 실측 — 그 밑이면 탈출 중 멈춤
     exit_duration_sec: 3.0       # 탈출 유지 시간 → 이후 BOTH 복귀
     track_reverse: false         # 역방향 트랙 배정 시 true (차선/조향/적분 자동 반전)
 
@@ -157,7 +201,9 @@ main_planner:
   ros__parameters:
     control_topic: /control
     loop_hz: 30.0
-    steering_gain: 0.0035      # 픽셀 오차(±320) -> steering percent(±1) 변환
+    startup_require_sign: true # SIGN 첫 메시지 전 STARTUP_HOLD(0 출력) — 기동 초기 LANE 무단출력 차단
+    steering_gain: 0.0030      # 0.0035→0.0030 (2026-07-15 아침): 0.22 속도에서 ±150px 리밋사이클 실측
+                               # — 커브는 lane_center_x 355 가 담당, 게인은 안정성 우선
                                # 0.0040 은 과조향 체감(2026-07-15) → 0.0035 중간값.
                                # 커브 P 정상상태 오차: 0.0030=117px / 0.0035=100px / 0.0040=87px
     invert_steering: false
@@ -173,9 +219,10 @@ control_node:
     pca9685_addr: 0x40
     steering_channel: 0
     throttle_channel: 1
-    steer_trim: -0.007          # 직진 보정 (2026-07-08 topic pub 테스트로 실측 — steering 0.12 에서 직진)
+    steer_trim: -0.007        # 폐루프 최적 실증값 (0.13 은 motor_test 개루프값 — 주행에서 전면 이탈/진동 유발로 기각, 2026-07-15 09시)
     max_throttle: 0.6
     dry_run: false            # 하드웨어 없이 테스트 시 true
+    throttle_slew_up: 0.012   # 스로틀 증가 슬루 (0→0.21 을 0.6초 램프) — 돌진 전류發 ESC 저전압 컷 방지 (bag 실측 2026-07-15). 감속·정지는 즉시
     manual_timeout: 0.4       # 조종기 입력 우선권 유지 시간 (초)
     # 서보/ESC 캘리브레이션 (펄스폭 us) — 조향 범위/중립 이상 시에만 조정
     servo_center_us: 1500
@@ -188,14 +235,17 @@ yolo_detect_node:
   ros__parameters:
     # NCNN(ARM 최적화) — A72 실측: 640모델 323ms(2T) / 320모델 55ms. 원복: yolo26n_traffic_ncnn_model + imgsz 640
     # ⚠️ 320 전환(2026-07-13, 통합 25Hz 확보): 먼 신호등 검출 거리 감소 가능 — /yolo/image/debug 로 거리 검증할 것
-    model_path: /home/topst/ai_moon_ros2/models/yolo26n_traffic_320_ncnn_model
+    model_path: /home/topst/ai_moon_ros2/models/yolo26n_traffic_ncnn_model   # 640 복귀(2026-07-15): 신호등 원거리 미검출 — 320 은 먼 객체에 약함
     image_topic: /camera/image/compressed
     detect_topic: /traffic_sign
-    infer_hz: 2.5            # 320+1T 추론 ~250ms(통합 부하 실측) — 여유 확인 후 상향 검토
+    infer_hz: 2.5            # 2.0→2.5 (2026-07-15): 출발 반응 단축 — 640 추론 323ms, 400ms 주기 내 수용
     ncnn_threads: 1          # 통합 부하 실측: 2T 290ms vs 1T 251ms — 스레드풀 선점 낭비로 1T 가 더 빠름
-    conf_threshold: 0.7      # 0.5 에서 상향 — 320 모델이 빨간구간 바닥을 red 로 오인해 랩 오카운트 (2026-07-13 실주행). 실물 신호등은 0.9대라 여유
-    imgsz: 320               # 320 모델과 짝 (640 모델로 원복 시 640 으로)
-    min_box_height_px: 30     # 이보다 작은(먼) 검출 무시 — 반응 거리 튜닝
+    conf_threshold: 0.4      # 0.7→0.4 (2026-07-15 640모델 실측: green 원거리 0.79, red 0.46 — 0.7 이면 결승 red 를 버림)
+    imgsz: 640               # 640 모델과 짝
+    min_box_height_px: 12     # 30→12 (2026-07-15): 원거리(작은) 신호등 통과 — 오검출은 conf 0.7 이 방어
+    max_box_height_px: 70     # 실물 신호등 박스 실측 20~40px — 70 이면 전구간 통과, 7~8m 내 사람 몸통(>70px) 차단
+    green_conf_threshold: 0.15 # 실측 0.25~0.29 가 임계 근처를 오르내려 출발 지연 — 오발 방어는 발광 검증이 담당
+    lamp_glow_min_px: 8       # 램프 발광 검증: 박스 안 채널지배 고휘도 픽셀 8개 이상 필요 (티셔츠/바닥 차단)
     stable_frames: 3          # N회 연속 검출 시 발행 (오검출 억제)
-    publish_debug_image: true
+    publish_debug_image: false # 경기/통합 FPS 우선: YOLO 박스 JPEG 인코딩 비활성 (필요 시에만 true)
     device: ''                # ''=자동, 'cpu', '0'(CUDA)

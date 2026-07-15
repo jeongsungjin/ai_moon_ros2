@@ -22,7 +22,7 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -110,9 +110,14 @@ def generate_launch_description():
             package='car_planner', executable='main_planner_node',
             name='main_planner', output='screen', parameters=[params_file],
         ),
-        Node(
-            package='control', executable='control_node', name='control_node',
-            output='screen', parameters=[params_file],
-            condition=IfCondition(use_control),
-        ),
+        # control(모터)은 5초 지연 기동 (2026-07-15): 미션 노드들이 뜨기 전에 lane+planner 가
+        # 먼저 주행을 시작해 "기동 직후 2초 무단 출발" 레이스 발생 — 모터 실행자를 늦게 띄워
+        # 미션들의 정지 주장(SIGN)이 확보된 뒤에만 바퀴가 돌 수 있게 함
+        TimerAction(period=5.0, actions=[
+            Node(
+                package='control', executable='control_node', name='control_node',
+                output='screen', parameters=[params_file],
+                condition=IfCondition(use_control),
+            ),
+        ]),
     ])

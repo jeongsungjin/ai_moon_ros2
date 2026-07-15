@@ -1,0 +1,31 @@
+# 아웃코스 전용 오버레이 파라미터.
+# params.yaml을 먼저 로드한 뒤 이 파일을 두 번째로 로드한다.
+# 아웃코스에서 달라지는 값은 반드시 여기에만 추가한다. 인코스 params.yaml은 수정하지 않는다.
+
+lane_detection_node:
+  ros__parameters:
+    # 현재 첫 기준 벡과 동일한 값으로 명시만 분리했다. 다음 벡 분석부터 아웃코스 값은
+    # 이 섹션에서만 조정한다. 인코스의 params.yaml 값에는 영향을 주지 않는다.
+    lane_center_x: 300.0       # 첫 아웃코스 벡: 직선 인지 중심 median 300.5px, 340은 평균 +0.133 좌조향 유발
+    speed_safe: 0.22
+    detection_stop_sec: 0.5   # 차선 완전 손실 후 마지막 x로 계속 주행하지 않고 0.5초 뒤 정지
+
+main_planner:
+  ros__parameters:
+    steering_gain: 0.0030
+
+yolo_detect_node:
+  ros__parameters:
+    # 갈림길 표지판 거리/인식률 튜닝도 아웃코스에서만 변경할 자리.
+    stable_frames: 3
+
+fork_mission:
+  ros__parameters:
+    enabled: true
+    publish_hz: 10.0
+    # 출발부터 표지판 감시를 시작한다. 출발 지점 주변 left/right 오검출이 확인되면
+    # 실제 갈림길 도달 시간보다 짧은 값으로 올려 현장 튜닝한다.
+    arm_delay_sec: 0.0
+    default_lane_side: BOTH
+    left_class_name: left
+    right_class_name: right
