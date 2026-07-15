@@ -77,6 +77,39 @@ class LaneDetectionNode(Node):
         self.declare_parameter('hsv_white_lower', [30, 0, 151])
         self.declare_parameter('hsv_white_upper', [122, 67, 207])
 
+        # Adaptive Threshold 차선 이진화 (2026-07-14 대회장: 글레어↔암부 편차가 HSV 절대값
+        # 튜닝 범위를 벗어남 → 국소 평균 대비 밝은 픽셀 = 차선, 조명 불변. HSV 연산 완전 미사용)
+        # false 로 내리면 기존 HSV 경로로 즉시 원복 (ros2 param set 런타임 스위치).
+        self.declare_parameter('lane_use_adaptive', True)
+        self.declare_parameter('adaptive_block', 75)   # 국소 평균 윈도우 (홀수, 차선 폭 2배쯤)
+        self.declare_parameter('adaptive_c', -18)      # 임계 = 국소평균 − C → 음수 절대값이 클수록 엄격
+        # adaptive 모드의 /yellow_pixels = BGR 산술 노랑 카운트: min(R,G)-B > 임계 (ROI y>=300).
+        # HSV 없이 색만 선별 — 대회장 bag 실측(run_0714_163731, T=60): 흰선 구간 0 /
+        # 링 접근 중앙값 2633 / 링 위 10428 / 빨간(주황) 구간 0 → 회전교차로 arm 전용 신호.
+        # (라인 픽셀 총량 방식은 링/직선 구분 실패로 폐기 — 링 접근 11.6k vs 직선 12k)
+        self.declare_parameter('yellow_chroma_thresh', 60)
+        # BEV 워핑 후 좌우 가장자리 N px 컬럼 제거 — 트랙 밖 배경 침입 차단 (0=끔)
+        self.declare_parameter('bev_edge_mask', 60)
+        # 모폴로지 열기 커널 (0=끔, 홀수 3+) — 커널보다 얇은 노이즈 제거.
+        # ⚠️ bag 실측(2026-07-14): 이 트랙 노이즈는 굵어서 효과 미미 (커널7: 노이즈 -11% vs 차선 -8.6%)
+        self.declare_parameter('morph_open', 0)
+        # 면적 기반 블롭 제거 (0=끔): contourArea < 임계 인 성분을 통째로 삭제.
+        # 모폴로지와 달리 차선 실선(큰 성분)은 전혀 안 깎음 — bag 실측(500): 노이즈 -16% vs
+        # 차선픽셀 -8% (손실분은 원거리 파편/점선 조각). 비용 0.3ms.
+        self.declare_parameter('min_blob_area', 500)
+        # x_location EMA 스무딩: 새 샘플 가중치 (1.0=끔). bag 실측(2026-07-15): 인지 지터가
+        # 프레임당 평균 40px(단선 추정 전환 점프) → 게인만으로 지그재그 해결 불가.
+        # 0.5 = 지터 절반, 지연 ~1프레임(40ms). 커브 반응이 둔해지면 0.7 로.
+        self.declare_parameter('x_ema_alpha', 0.5)
+        # x_location 프레임당 최대 변화량 (0=끔). bag 실측(2026-07-15 t=45.6s): 트랙 옆
+        # 사람이 커브에서 오른쪽 차선으로 오인 → 1프레임 247→67 급락 → 급꺾임.
+        # 실제 차량 동역학상 60px/frame(25Hz 기준 1500px/s) 이상의 참 변화는 불가능.
+        self.declare_parameter('x_max_step', 60)
+        # 커브 감속 (0=끔): speed ×= 1 - gain×|err|/320 (하한 60%). P제어 커브 정상상태
+        # 오차(조향수요÷게인, 0.0035 에서 ~100px)는 게인 인상 없인 못 줄이는데 게인 0.0040 은
+        # 과조향 기각(2026-07-15) → 저속으로 같은 조향에 더 작게 돌게 하는 최후의 보루.
+        self.declare_parameter('curve_slow_gain', 0.6)
+
         # 슬라이딩윈도우 튜닝값 (slidewindow.py 의 동명 속성과 1:1, 실시간 반영)
         self.declare_parameter('sw_margin', 60)
         self.declare_parameter('sw_win_h1', 380)
@@ -113,6 +146,19 @@ class LaneDetectionNode(Node):
         self.upper_orange = np.array(self.get_parameter('hsv_orange_upper').value)
         self.lower_white = np.array(self.get_parameter('hsv_white_lower').value)
         self.upper_white = np.array(self.get_parameter('hsv_white_upper').value)
+
+        self.lane_use_adaptive = bool(self.get_parameter('lane_use_adaptive').value)
+        self.adaptive_block = int(self.get_parameter('adaptive_block').value)
+        self.adaptive_c = int(self.get_parameter('adaptive_c').value)
+        self.yellow_chroma_thresh = int(self.get_parameter('yellow_chroma_thresh').value)
+        self.bev_edge_mask = int(self.get_parameter('bev_edge_mask').value)
+        self.morph_open = int(self.get_parameter('morph_open').value)
+        self.min_blob_area = int(self.get_parameter('min_blob_area').value)
+        self.x_ema_alpha = float(self.get_parameter('x_ema_alpha').value)
+        self.x_max_step = int(self.get_parameter('x_max_step').value)
+        self.curve_slow_gain = float(self.get_parameter('curve_slow_gain').value)
+        # BEV 워핑이 y>340 만 샘플 → 그 아래 ROI 만 이진화 (여유 40px, CPU ~1/3)
+        self.adapt_y0 = 300
 
         # Perspective Transform (원본 좌표 유지)
         # 파이프라인 입구에서 640x480 강제 리사이즈하므로 폭은 상수 (process 의 x 와 동일)
@@ -174,6 +220,8 @@ class LaneDetectionNode(Node):
 
         self.cv_image = None
         self.raw_image = None
+        self._last_x_location = 320.0   # 폭주 가드용 직전 유효값
+        self._x_filtered = 320.0        # EMA 스무딩 상태
         self.steer = 0.0
         self.motor = self.speed_safe
         self.lane_state = None
@@ -203,8 +251,18 @@ class LaneDetectionNode(Node):
         for p in params:
             if p.name in hsv_map:
                 setattr(self, hsv_map[p.name], np.array(p.value))
-            elif p.name in ('lane_use_white', 'lane_use_orange', 'lane_use_yellow'):
+            elif p.name in ('lane_use_white', 'lane_use_orange', 'lane_use_yellow',
+                            'lane_use_adaptive'):
                 setattr(self, p.name, bool(p.value))
+            elif p.name in ('adaptive_block', 'adaptive_c', 'yellow_chroma_thresh',
+                            'bev_edge_mask', 'morph_open', 'min_blob_area'):
+                setattr(self, p.name, int(p.value))
+            elif p.name == 'x_ema_alpha':
+                self.x_ema_alpha = float(p.value)
+            elif p.name == 'x_max_step':
+                self.x_max_step = int(p.value)
+            elif p.name == 'curve_slow_gain':
+                self.curve_slow_gain = float(p.value)
             elif p.name in ('speed_safe', 'speed_fast'):
                 setattr(self, p.name, float(p.value))
             elif p.name in ('sw_margin', 'sw_win_h1', 'sw_win_half', 'sw_circle_height',
@@ -299,42 +357,113 @@ class LaneDetectionNode(Node):
         if self.show_gui:
             self.read_trackbars()
 
-        img_hsv = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2HSV)
+        if self.lane_use_adaptive:
+            # 그레이스케일 전용 경로 — HSV 연산(cvtColor+inRange) 완전 미사용.
+            # 조명 불변 이진화: 국소 평균보다 (−adaptive_c 만큼) 밝은 픽셀 = 차선.
+            # 색 무관이라 흰선·노란(링) 선 모두 잡힘 — 기하 추종용으로는 그게 맞음.
+            block = max(3, self.adaptive_block) | 1   # 홀수 강제
+            gray_roi = cv2.cvtColor(frame_resized[self.adapt_y0:], cv2.COLOR_BGR2GRAY)
+            mask_lane = np.zeros((y, x), dtype=np.uint8)
+            mask_lane[self.adapt_y0:] = cv2.adaptiveThreshold(
+                gray_roi, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY,
+                block, self.adaptive_c)
+            # /yellow_pixels ← BGR 산술 노랑 카운트 (min(R,G)-B > yellow_chroma_thresh).
+            # HSV 없이 노란 링만 선별 — bag 실측(T=60): 흰선 0 / 링 접근 2.6k / 주황바닥 0.
+            # 흰선은 R≈G≈B 라 0, 주황 바닥은 G-B 차가 작아 T=60 에서 소거됨.
+            b_ch, g_ch, r_ch = cv2.split(frame_resized[self.adapt_y0:])
+            yellowness = cv2.subtract(cv2.min(r_ch, g_ch), b_ch)
+            yellow_count = int(cv2.countNonZero(
+                cv2.compare(yellowness, self.yellow_chroma_thresh, cv2.CMP_GT)))
+            white_count = orange_count = 0
+        else:
+            # 기존 HSV 경로 (lane_use_adaptive=false 원복용)
+            img_hsv = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2HSV)
+            mask_yellow = cv2.inRange(img_hsv, self.lower_yellow, self.upper_yellow)
+            mask_orange = cv2.inRange(img_hsv, self.lower_orange, self.upper_orange)
+            mask_white = cv2.inRange(img_hsv, self.lower_white, self.upper_white)
 
-        # 색상별 마스크 (노랑 = 회전교차로 링 — 항상 계산해 /yellow_pixels 발행)
-        mask_orange = cv2.inRange(img_hsv, self.lower_orange, self.upper_orange)
-        mask_white = cv2.inRange(img_hsv, self.lower_white, self.upper_white)
-        mask_yellow = cv2.inRange(img_hsv, self.lower_yellow, self.upper_yellow)
+            # 차선 마스크 합성: 활성화된 색상들의 OR
+            mask_lane = np.zeros(mask_white.shape, dtype=np.uint8)
+            if self.lane_use_white:
+                mask_lane = cv2.bitwise_or(mask_lane, mask_white)
+            if self.lane_use_orange:
+                mask_lane = cv2.bitwise_or(mask_lane, mask_orange)
+            if self.lane_use_yellow:
+                mask_lane = cv2.bitwise_or(mask_lane, mask_yellow)
 
-        # 차선 마스크 합성: 활성화된 색상들의 OR (새 트랙 = 흰색 + 주황)
-        # (기존 코드는 노란색만 슬라이딩윈도우에 들어갔음 — 흰색은 정지선 카운트 전용이었음)
-        mask_lane = np.zeros(mask_white.shape, dtype=np.uint8)
-        if self.lane_use_white:
-            mask_lane = cv2.bitwise_or(mask_lane, mask_white)
-        if self.lane_use_orange:
-            mask_lane = cv2.bitwise_or(mask_lane, mask_orange)
-        if self.lane_use_yellow:
-            mask_lane = cv2.bitwise_or(mask_lane, mask_yellow)
+            yellow_count = int(np.count_nonzero(mask_yellow))
+            orange_count = int(np.count_nonzero(mask_orange))
+            white_count = int(np.count_nonzero(mask_white))
 
         # 컬러 필터 이미지는 GUI 표시용으로만 필요 (와핑 입력으로는 미사용)
         filtered_img = (cv2.bitwise_and(frame_resized, frame_resized, mask=mask_lane)
                         if self.show_gui else None)
 
         # 픽셀 모니터링: 와핑 전 마스크 기준
-        # /yellow_pixels 는 회전교차로(노란 링) 진입 신호로 쓰임
-        self.orange_pixel_pub.publish(Int32(data=int(np.count_nonzero(mask_orange))))
-        self.white_pixel_pub.publish(Int32(data=int(np.count_nonzero(mask_white))))
-        self.yellow_pixel_pub.publish(Int32(data=int(np.count_nonzero(mask_yellow))))
+        # /yellow_pixels = 회전교차로 진입(arm) 신호 (adaptive 모드: BGR 산술 노랑 카운트)
+        self.orange_pixel_pub.publish(Int32(data=orange_count))
+        self.white_pixel_pub.publish(Int32(data=white_count))
+        self.yellow_pixel_pub.publish(Int32(data=yellow_count))
+
+        # 모폴로지 열기 (옵션): 커널보다 얇은 노이즈 제거 — ROI 만 (0.2~0.8ms)
+        if self.morph_open >= 3:
+            k = self.morph_open | 1
+            ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+            mask_lane[self.adapt_y0:] = cv2.morphologyEx(
+                mask_lane[self.adapt_y0:], cv2.MORPH_OPEN, ker)
+
+        # 면적 기반 블롭 제거: 작은 성분만 통째로 삭제 (차선 실선은 무손상, 0.3ms)
+        # CHAIN_APPROX_SIMPLE + drawContours 일괄 1회 (프레임별 파이썬 루프 갱신 회피)
+        if self.min_blob_area > 0:
+            roi_m = mask_lane[self.adapt_y0:]
+            cnts, _ = cv2.findContours(roi_m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            small = [c for c in cnts if cv2.contourArea(c) < self.min_blob_area]
+            if small:
+                cv2.drawContours(roi_m, small, -1, 0, -1)
 
         # 슬라이딩윈도우 입력: 1채널 차선 마스크만 와핑
         # (기존: 3채널 컬러 와핑 + cvtColor + 미사용 yellow 와핑 → 10fps CPU 병목이라 제거)
         warped_lane = cv2.warpPerspective(mask_lane, self.matrix, (640, 480))
+
+        # BEV 좌우 가장자리 마스킹 (2026-07-14): 그레이스케일 전환 후 트랙 밖 배경(바닥
+        # 격자선 등)이 BEV 가장자리로 침입 — 대비가 차선급이라 C 로는 분리 불가(bag 실측),
+        # 위치로 차단. 정상 주행 시 차선은 x 90~550 안 (bag 실측). 0 이면 비활성.
+        m = self.bev_edge_mask
+        if m > 0:
+            warped_lane[:, :m] = 0
+            warped_lane[:, -m:] = 0
 
         # 이진화 + 슬라이딩 윈도우
         bin_img = np.zeros_like(warped_lane)
         bin_img[warped_lane > 20] = 1
 
         out_img, x_location, _ = self.slidewindow.slidewindow(bin_img)
+
+        # 폭주 가드 (2026-07-15 bag 실측: polyfit 실패 순간 x_location 이 -8124 ~ +17928 로
+        # 튐 → 게인 곱해 1~2프레임 풀락 조향 = 커브에서 차가 튕기는 원인). 화면 범위를
+        # 벗어난 값은 인지 실패로 보고 직전 유효값을 유지한다.
+        if 0.0 <= x_location <= 640.0:
+            self._last_x_location = x_location
+        else:
+            self.get_logger().warning(
+                f'x_location 폭주 {x_location:.0f} → 직전값 {self._last_x_location:.0f} 유지',
+                throttle_duration_sec=2.0)
+            x_location = self._last_x_location
+
+        # 변화율 제한: 1프레임 급점프(트랙 옆 사람 오인 등)는 물리적으로 불가능한 신호
+        # — 프레임당 x_max_step 이내로 클램프 (지속적인 참 변화는 몇 프레임에 걸쳐 따라감)
+        if self.x_max_step > 0:
+            lo = self._x_filtered - self.x_max_step
+            hi = self._x_filtered + self.x_max_step
+            x_location = min(max(x_location, lo), hi)
+
+        # EMA 스무딩: 인지 지터(±40px/프레임, 단선 추정 전환 점프) 완화 — alpha=새 샘플 가중치
+        if 0.0 < self.x_ema_alpha < 1.0:
+            self._x_filtered = (self.x_ema_alpha * x_location
+                                + (1.0 - self.x_ema_alpha) * self._x_filtered)
+            x_location = self._x_filtered
+        else:
+            self._x_filtered = x_location
         self.x_location_pub.publish(Float32(data=float(x_location)))
 
         # 조향: 원본은 raw 픽셀 오차 (PID 는 옵션)
@@ -342,6 +471,9 @@ class LaneDetectionNode(Node):
         self.steer = self.pid.pid_control(error) if self.use_pid else float(error)
 
         self.motor = self.speed_fast if self.version == 'fast' else self.speed_safe
+        # 커브 감속: 오차 비례로 속도를 줄여 커브 유지력 확보 (하한 60%)
+        if self.curve_slow_gain > 0.0:
+            self.motor *= max(0.6, 1.0 - self.curve_slow_gain * abs(error) / 320.0)
 
         self.publish_ctrl_cmd(self.motor, self.steer)
 
@@ -349,8 +481,9 @@ class LaneDetectionNode(Node):
         if self.show_gui:
             cv2.imshow('Original Image', frame_resized)
             cv2.imshow('Lane Mask (combined)', filtered_img)
-            cv2.imshow('Orange Mask', cv2.bitwise_and(frame_resized, frame_resized, mask=mask_orange))
-            cv2.imshow('White Mask', cv2.bitwise_and(frame_resized, frame_resized, mask=mask_white))
+            if not self.lane_use_adaptive:   # adaptive 모드에선 색 마스크 없음
+                cv2.imshow('Orange Mask', cv2.bitwise_and(frame_resized, frame_resized, mask=mask_orange))
+                cv2.imshow('White Mask', cv2.bitwise_and(frame_resized, frame_resized, mask=mask_white))
             cv2.imshow('Warped Image', warped_lane)
             cv2.imshow('Output Image', out_img)
             cv2.waitKey(1)

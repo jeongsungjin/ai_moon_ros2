@@ -47,6 +47,9 @@ class CameraNode(Node):
         # USB 카메라의 하드웨어 MJPG(JPEG)를 디코딩/재인코딩 없이 그대로 발행 (CPU ~90%→~5%).
         # flip_180 이거나 협상/프레임 검증 실패 시 자동으로 기존(재인코딩) 경로 폴백
         self.declare_parameter('passthrough_mjpg', False)
+        # 기동 시 적용할 v4l2 컨트롤 ('이름=값' 목록, 순서대로 적용 — exposure_auto 를
+        # exposure_absolute 보다 앞에). 카메라 재시작마다 하드웨어 설정이 리셋되는 것 대응.
+        self.declare_parameter('v4l2_controls', [''])
 
         publish_topic = str(self.get_parameter('publish_topic').value)
         self.camera_type = camera_type = str(self.get_parameter('camera_type').value)
@@ -105,12 +108,52 @@ class CameraNode(Node):
                 f'Failed to open camera (type={camera_type}, device={camera_device})'
             )
 
+        # v4l2 하드웨어 설정 적용 (2026-07-14 대회장: 자동노출이 어두운 곳에서 노출을
+        # 1250 까지 늘려 카메라가 15fps 로 깎였음 → 노출 고정. adaptive 이진화는
+        # 전역 밝기에 둔감하므로 고정 노출로 충분)
+        ctrls = [s for s in self.get_parameter('v4l2_controls').value if s and '=' in s]
+        if ctrls and camera_type == 'usb':
+            self._apply_v4l2_controls(camera_device, ctrls)
+
         self.get_logger().info(
             f'camera_node started: type={camera_type}, device={camera_device}, '
             f'{self.image_width}x{self.image_height}@{publish_hz}Hz -> {publish_topic}'
         )
 
         self.timer = self.create_timer(1.0 / publish_hz, self.timer_callback)
+
+    _V4L2_CIDS = {
+        'brightness': 0x00980900, 'contrast': 0x00980901, 'saturation': 0x00980902,
+        'wb_auto': 0x0098090c, 'gain': 0x00980913, 'wb_temp': 0x0098091a,
+        'backlight_comp': 0x0098091c, 'exposure_auto': 0x009a0901,
+        'exposure_absolute': 0x009a0902, 'exposure_auto_priority': 0x009a0903,
+    }
+
+    def _apply_v4l2_controls(self, device, ctrls):
+        """'이름=값' 목록을 순서대로 적용 (tools/cam_ctl.py 와 동일한 raw ioctl)."""
+        import fcntl
+        import struct
+        VIDIOC_S_CTRL = 0xc008561c
+        try:
+            fd = open(device, 'rb', buffering=0)
+        except OSError as e:
+            self.get_logger().warning(f'v4l2 컨트롤 적용 실패 (open): {e}')
+            return
+        try:
+            for item in ctrls:
+                name, _, val = item.partition('=')
+                name = name.strip()
+                cid = self._V4L2_CIDS.get(name)
+                if cid is None:
+                    self.get_logger().warning(f'모르는 v4l2 컨트롤: {name}')
+                    continue
+                try:
+                    fcntl.ioctl(fd, VIDIOC_S_CTRL, struct.pack('=Ii', cid, int(val)))
+                    self.get_logger().info(f'v4l2 적용: {name} = {int(val)}')
+                except (OSError, ValueError) as e:
+                    self.get_logger().warning(f'v4l2 {name}={val} 적용 실패: {e}')
+        finally:
+            fd.close()
 
     def timer_callback(self):
         ok, frame = self.cap.read()

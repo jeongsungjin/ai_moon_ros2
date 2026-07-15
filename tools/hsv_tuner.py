@@ -5,6 +5,9 @@ lane_detection_node 와 독립적으로 카메라 영상을 직접 구독해서
 브라우저 슬라이더로 HSV 범위를 실시간 조정하고 마스크를 확인한다.
 확정된 값은 화면의 YAML 스니펫을 params.yaml 에 복사하면 된다.
 
+'adaptive' 버튼 = 그레이스케일 국소 임계(adaptiveThreshold) 미리보기 —
+lane_detection_node 의 lane_use_adaptive 경로와 동일 (블록/C 슬라이더).
+
 사용:
   source ~/ai_moon_ros2/install/setup.bash
   python3 ~/ai_moon_ros2/tools/hsv_tuner.py
@@ -36,6 +39,10 @@ PARAMS_YAML = os.path.join(
 
 # params.yaml 의 hsv_<이름>_lower/upper 와 1:1 대응
 COLOR_NAMES = ['yellow', 'left_yellow', 'white', 'red']
+# 'adaptive' = 그레이스케일 국소 임계 미리보기 — lane_detection_node 의
+# lane_use_adaptive 경로와 동일 로직 (블록/C 슬라이더로 튜닝)
+MODES = COLOR_NAMES + ['adaptive']
+ADAPT_Y0 = 300   # lane_detection_node.adapt_y0 와 반드시 일치 (BEV 는 y>340 만 샘플)
 
 DEFAULTS = {
     'yellow': ([10, 108, 125], [35, 255, 255]),
@@ -49,6 +56,7 @@ def load_initial_values():
     """params.yaml 의 현재 튜닝값에서 시작한다 (없으면 기본값)."""
     values = {c: {'lower': list(lo), 'upper': list(up)}
               for c, (lo, up) in DEFAULTS.items()}
+    values['adaptive'] = {'block': 75, 'c': -18}
     try:
         with open(PARAMS_YAML) as f:
             params = yaml.safe_load(f)['lane_detection_node']['ros__parameters']
@@ -56,6 +64,8 @@ def load_initial_values():
             if f'hsv_{c}_lower' in params:
                 values[c]['lower'] = list(params[f'hsv_{c}_lower'])
                 values[c]['upper'] = list(params[f'hsv_{c}_upper'])
+        values['adaptive'] = {'block': int(params.get('adaptive_block', 75)),
+                              'c': int(params.get('adaptive_c', -18))}
     except Exception as e:
         print(f'params.yaml 읽기 실패, 기본값 사용: {e}')
     return values
@@ -89,8 +99,23 @@ class HsvTunerNode(Node):
 
     def make_mask(self, frame):
         with self.lock:
-            lo = np.array(self.values[self.current]['lower'])
-            up = np.array(self.values[self.current]['upper'])
+            current = self.current
+            if current == 'adaptive':
+                block = max(3, int(self.values['adaptive']['block'])) | 1
+                c = int(self.values['adaptive']['c'])
+            else:
+                lo = np.array(self.values[current]['lower'])
+                up = np.array(self.values[current]['upper'])
+        if current == 'adaptive':
+            # lane_detection_node 의 lane_use_adaptive 경로와 동일 (ROI y>=ADAPT_Y0)
+            gray_roi = cv2.cvtColor(frame[ADAPT_Y0:], cv2.COLOR_BGR2GRAY)
+            mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+            mask[ADAPT_Y0:] = cv2.adaptiveThreshold(
+                gray_roi, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY,
+                block, c)
+            with self.lock:
+                self.pixel_count = int(cv2.countNonZero(mask))
+            return mask
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         if lo[0] <= up[0]:
             mask = cv2.inRange(hsv, lo, up)
@@ -110,6 +135,8 @@ class HsvTunerNode(Node):
             for c in COLOR_NAMES:
                 lines.append(f"hsv_{c}_lower: {self.values[c]['lower']}")
                 lines.append(f"hsv_{c}_upper: {self.values[c]['upper']}")
+            lines.append(f"adaptive_block: {self.values['adaptive']['block']}")
+            lines.append(f"adaptive_c: {self.values['adaptive']['c']}")
         return '\n'.join(lines)
 
 
@@ -137,25 +164,26 @@ pre { background:#2a2a2a; padding:10px; border-radius:6px; overflow-x:auto; }
 <h3>params.yaml 에 붙여넣기</h3>
 <pre id="yaml"></pre>
 <script>
-const CH = [['hl','H 하한',179],['sl','S 하한',255],['vl','V 하한',255],
-            ['hh','H 상한',179],['sh','S 상한',255],['vh','V 상한',255]];
+const CH_HSV = [['hl','H 하한',0,179],['sl','S 하한',0,255],['vl','V 하한',0,255],
+                ['hh','H 상한',0,179],['sh','S 상한',0,255],['vh','V 상한',0,255]];
+// adaptive: lane_detection_node 의 adaptive_block / adaptive_c 와 1:1
+const CH_AD  = [['block','블록(홀수)',3,201],['c','C(음수=엄격)',-60,10]];
 let state = null, timer = null;
 
+function chans() { return state && state.current === 'adaptive' ? CH_AD : CH_HSV; }
 function send() {
-  const v = {};
-  CH.forEach(([k]) => v[k] = +document.getElementById(k).value);
-  fetch(`/set?color=${state.current}&hl=${v.hl}&sl=${v.sl}&vl=${v.vl}`
-        + `&hh=${v.hh}&sh=${v.sh}&vh=${v.vh}`);
+  const qs = chans().map(([k]) => `${k}=${document.getElementById(k).value}`).join('&');
+  fetch(`/set?color=${state.current}&` + qs);
 }
 function onSlide() {
-  CH.forEach(([k]) => document.getElementById(k+'_v').textContent
-                      = document.getElementById(k).value);
+  chans().forEach(([k]) => document.getElementById(k+'_v').textContent
+                           = document.getElementById(k).value);
   clearTimeout(timer); timer = setTimeout(send, 80);
 }
 function build() {
-  document.getElementById('sliders').innerHTML = CH.map(([k,label,max]) =>
+  document.getElementById('sliders').innerHTML = chans().map(([k,label,min,max]) =>
     `<div class="slider"><label>${label}</label>` +
-    `<input type="range" id="${k}" min="0" max="${max}" oninput="onSlide()">` +
+    `<input type="range" id="${k}" min="${min}" max="${max}" oninput="onSlide()">` +
     `<span id="${k}_v"></span></div>`).join('');
 }
 function refresh() {
@@ -163,10 +191,16 @@ function refresh() {
     state = s;
     document.getElementById('colors').innerHTML = s.colors.map(c =>
       `<button class="${c===s.current?'on':''}" onclick="fetch('/select?color=${c}').then(refresh)">${c}</button>`).join('');
-    const [lo, up] = [s.values[s.current].lower, s.values[s.current].upper];
-    [['hl',lo[0]],['sl',lo[1]],['vl',lo[2]],['hh',up[0]],['sh',up[1]],['vh',up[2]]]
-      .forEach(([k,v]) => { document.getElementById(k).value = v;
-                            document.getElementById(k+'_v').textContent = v; });
+    build();
+    let pairs;
+    if (s.current === 'adaptive') {
+      pairs = [['block', s.values.adaptive.block], ['c', s.values.adaptive.c]];
+    } else {
+      const [lo, up] = [s.values[s.current].lower, s.values[s.current].upper];
+      pairs = [['hl',lo[0]],['sl',lo[1]],['vl',lo[2]],['hh',up[0]],['sh',up[1]],['vh',up[2]]];
+    }
+    pairs.forEach(([k,v]) => { document.getElementById(k).value = v;
+                               document.getElementById(k+'_v').textContent = v; });
     document.getElementById('yaml').textContent = s.yaml;
   });
 }
@@ -207,7 +241,7 @@ def make_handler(node: HsvTunerNode):
             elif path == '/state':
                 with node.lock:
                     state = {
-                        'colors': COLOR_NAMES,
+                        'colors': MODES,
                         'current': node.current,
                         'values': node.values,
                         'pixel_count': node.pixel_count,
@@ -216,13 +250,22 @@ def make_handler(node: HsvTunerNode):
                 self._json(state)
             elif path == '/select':
                 c = q.get('color')
-                if c in COLOR_NAMES:
+                if c in MODES:
                     with node.lock:
                         node.current = c
                 self._json({'ok': True})
             elif path == '/set':
                 c = q.get('color')
-                if c in COLOR_NAMES:
+                if c == 'adaptive':
+                    try:
+                        block = max(3, int(q['block'])) | 1
+                        cval = int(q['c'])
+                        with node.lock:
+                            node.current = c
+                            node.values['adaptive'] = {'block': block, 'c': cval}
+                    except (KeyError, ValueError):
+                        pass
+                elif c in COLOR_NAMES:
                     try:
                         lo = [int(q['hl']), int(q['sl']), int(q['vl'])]
                         up = [int(q['hh']), int(q['sh']), int(q['vh'])]

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """회전교차로 미션 노드 (In 코스: 진입 → 1회전 이상 → 탈출).
 
-인지 포인트: 회전교차로 링은 노란색 → /yellow_pixels 급증이 진입 신호.
+인지 포인트: /yellow_pixels 급증이 진입 신호.
+  - HSV 모드: 노란(링) HSV 픽셀 수
+  - adaptive 모드(2026-07-14 대회장 기본): BGR 산술 노랑 카운트 (min(R,G)-B > 60)
+    — bag 실측: 흰선 구간 0 / 링 접근 2633 / 주황(빨간구간) 바닥 0. 임계 1000.
 회전 중에는 차선 주행(슬라이딩윈도우)이 원형 차선을 그대로 따라가므로,
 이 노드는 (1) 진입 시점 판단 (2) 1회전 완료 판단 (3) 탈출 조향 개입만 담당한다.
 
@@ -216,7 +219,11 @@ class RoundaboutMissionNode(Node):
         self.get_logger().info(f'차선 색 전환: white={white} orange={orange} yellow={yellow}')
 
     def set_yellow_only(self):
-        """LOOP 진입: 현재 색 구성을 스냅샷하고 노랑(링) 전용으로 전환."""
+        """LOOP 진입: 현재 색 구성을 스냅샷하고 노랑(링) 전용으로 전환.
+
+        adaptive(그레이스케일) 모드에선 색 플래그가 마스크에 영향 없음(무해한 no-op) —
+        링 추종은 set_lane_side(안쪽 차선 박스) 기하가 담당. HSV 원복 시를 위해 유지.
+        """
         names = ['lane_use_white', 'lane_use_orange', 'lane_use_yellow']
         if self._lane_get.service_is_ready():
             fut = self._lane_get.call_async(GetParameters.Request(names=names))

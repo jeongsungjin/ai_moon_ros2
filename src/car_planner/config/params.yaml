@@ -7,37 +7,75 @@ camera_node:
     camera_device: /dev/video1  # C920 웹캠 (video0은 Telechips 내장 videoinput0)
     image_width: 640
     image_height: 480
-    publish_hz: 30.0
+    publish_hz: 25.0          # 30→25 (2026-07-14): lane 이 못 쓰던 잉여 프레임 회수 → 25/25 밸런스
+                              # (인코딩 CPU 17% 회수, 아루코 하한 15Hz 대비 여유 유지)
     flip_180: false
     jpeg_quality: 85          # 90→85 (2026-07-13): enc 6.1→4.7ms, 구독 4곳 dec 5.2→4.4ms, HSV 픽셀 드리프트 ≤1.2% 실측
                               # passthrough 시 미사용 (카메라 자체 압축 사용)
     passthrough_mjpg: false   # C920 원본 JPEG 은 133KB/디코딩 21ms 로 구독자 5곳이 4.7배 비싸짐 (실측) — 재인코딩이 총비용 우위
+    # 기동 시 v4l2 적용 (재시작 리셋 대응). 2026-07-14 확정: 노출 156 고정 — 자동노출이
+    # 어두운 곳에서 노출 1250 까지 늘려 15fps 로 깎였음. adaptive 이진화라 고정 노출로 충분.
+    v4l2_controls: ['exposure_auto=1', 'exposure_absolute=156', 'gain=64']
 
 lane_detection_node:
   ros__parameters:
     image_topic: /camera/image/compressed
-    process_hz: 30.0
+    process_hz: 25.0          # 22→25 (2026-07-14): 카메라도 25 로 내려 25/25 밸런스 — 인지 신선도 = min(둘)
+                              # (30Hz 풀가동 시 lane 이 CPU 82% 점유해 카메라를 20Hz 로 밀어냈던 이력 참고)
     version: safe             # 'safe' | 'fast'
-    speed_safe: 0.180
+    speed_safe: 0.18
     speed_fast: 0.5
     use_pid: false
     publish_debug_image: true  # 디버그 영상 끔 (+1~2fps) — 슬라이딩윈도우 확인할 땐 true
     debug_every: 5             # 디버그 영상 N프레임당 1장 (25Hz 기준 5fps — 뷰어 확인용으론 충분) 로
     show_gui: false           # 모니터/VNC 연결 시 true → imshow + HSV 트랙바
     # 슬라이딩윈도우 튜닝값 (조종기 튜너/param set 으로 실시간 변경 가능)
-    sw_margin: 94             # 추적 윈도우 좌우 반폭
+    sw_margin: 75             # 추적 윈도우 좌우 반폭
     sw_win_h1: 380            # 초기 탐색창 윗변 y
-    sw_win_half: 148          # 초기 탐색창 반폭 (145/495 중심)
-    sw_circle_height: 280     # 조향 기준점(ld) y — 80~459
+    sw_win_half: 110          # 초기 탐색창 반폭 (145/495 중심)
+    sw_circle_height: 220     # 조향 기준점(ld) y — 80~459. 280→240→220 (2026-07-15): 룩어헤드가
+                              # 멀수록 미리보기 오차가 조향을 대신 만들어 차체는 중앙 유지 (커브
+                              # 이탈 억제). ⚠️ 20px 격자: (460-ld)/20+1 ≤ nwindows 필수 (220→13개)
+                              # 오프라인 검증: 320고정 2%/지터 26.8px — 240과 동급
     sw_road_width: 0.5       # 차선 폭 비율
-    sw_nwindows: 20           # 추적 윈도우 개수 (×20px = 추적 높이, ld 커버 필요)
-    sw_minpix: 0              # 윈도우 유효 최소 픽셀 (노이즈 문턱, 0=1픽셀도 인정)
+    sw_nwindows: 14          # 추적 윈도우 개수 (×20px = 추적 높이). ⚠️ 윈도우 계단이
+                             # circle_height 에 닿아야 x_location 이 갱신됨 — 10개는 y=280 에서
+                             # 끝나 ld 240 도달 불가(2026-07-15 직진불가 사고 원인). 240 엔 12+ 필요
+    sw_minpix: 15              # 윈도우 유효 최소 픽셀 (노이즈 문턱, 0=1픽셀도 인정)
     # PID 게인 (use_pid: true 일 때만 사용 — 지그재그/출렁임 억제)
     pid_kp: 0.7
     pid_ki: 0.0008
     pid_kd: 0.15
 
-    # 차선 마스크에 들어갈 색 (일반 차선: 흰+주황 / 회전교차로 링: 노랑)
+    # Adaptive Threshold 차선 이진화 (2026-07-14 대회장: 글레어↔암부 편차로 HSV 절대값 튜닝 불가
+    # — 회전교차로 노란 링 HSV 도 못 쓰는 상황이라 그레이스케일 전면 전환, HSV 연산 미사용)
+    # 국소 평균 대비 밝은 픽셀 = 차선 (색 무관). false 면 아래 HSV 경로로 즉시 원복.
+    lane_use_adaptive: true
+    # adaptive 모드 /yellow_pixels = BGR 산술 노랑 카운트 (min(R,G)-B > 임계, ROI y>=300)
+    # bag 실측(run_0714_163731): T=60 에서 흰선 구간 0 / 링 접근 2633 / 링 위 10428 / 주황바닥 0
+    yellow_chroma_thresh: 60
+    # BEV 좌우 가장자리 N px 제거 — 트랙 밖 배경(바닥 격자선) 침입 차단 (0=끔)
+    # C 조이기로는 분리 불가 실측(배경이 차선급 대비) → 위치 기반 차단
+    bev_edge_mask: 60
+    # 모폴로지 열기 커널 (0=끔, 홀수 3+). bag 실측: 이 트랙 노이즈는 굵어 효과 미미
+    # (커널7: 노이즈 -11% vs 차선 -8.6%) — 시도해보려면 ros2 param set 으로 3/5/7
+    morph_open: 0
+    # 면적 기반 블롭 제거 (0=끔): 임계 미만 면적 성분 통째 삭제 — 차선 실선 무손상.
+    # bag 실측(500): 노이즈 -16% vs 파편 -8%, 0.3ms. 1000 이상은 효과 정체.
+    min_blob_area: 500
+    # x_location EMA (새 샘플 가중치, 1.0=끔). bag 실측: 인지 지터 40px/프레임(단선 전환
+    # 점프) → 지그재그의 원신호. 0.5=지터 절반/지연 1프레임. 커브 둔하면 0.7
+    x_ema_alpha: 0.5
+    # x_location 프레임당 최대 변화 (0=끔). 트랙 옆 사람 오인 1프레임 급락(247→67, t=45.6s
+    # bag 실측) 방어 — 참 변화는 60px/f(1500px/s) 을 넘을 수 없음
+    x_max_step: 60
+    # 커브 감속 (0=끔): speed ×= 1 - gain×|err|/320, 하한 60%. P제어 커브 정상상태 오차
+    # (~100px@gain0.0035)를 게인 인상 없이 완화하는 최후의 보루 — err 100px 시 속도 81%
+    curve_slow_gain: 0.6
+    adaptive_block: 75        # 국소 평균 윈도우 (홀수, 차선 폭의 2배쯤 — 하단 선폭 25~60px)
+    adaptive_c: -31           # 임계 = 국소평균 − C → 절대값 클수록 엄격 (2026-07-14 현장 확정: 경계 선명)
+
+    # 차선 마스크에 들어갈 색 (adaptive=false 일 때의 HSV 경로 / 회전교차로 링: 노랑)
     lane_use_white: true
     lane_use_yellow: true     # 회전교차로 노란 링 추종에 필요 (HSV 는 현장에서 튜닝)
     # HSV 튜닝값 (조명 환경에 맞게 트랙에서 조정)
@@ -67,9 +105,9 @@ red_zone_node:
     image_topic: /camera/image/compressed
     process_hz: 3.0
     roi: [240, 480, 0, 640]      # 바닥이 보이는 하단부 (640x480 기준)
-    hsv_red1_lower: [0, 80, 60]  # 빨강 low-hue 구간
-    hsv_red1_upper: [10, 255, 255]
-    hsv_red2_lower: [160, 80, 60]  # 빨강 high-hue 구간
+    hsv_red1_lower: [0, 90, 80]  # 빨강 low-hue 구간 (2026-07-14 현장 확정 — mhsv red 탭 실측)
+    hsv_red1_upper: [15, 255, 255]
+    hsv_red2_lower: [170, 90, 80]  # 빨강 high-hue 구간
     hsv_red2_upper: [179, 255, 255]
     on_pixel_threshold: 4000     # 이상이면 is_red=true
     off_pixel_threshold: 1500    # 미만이면 is_red=false (히스테리시스)
@@ -92,16 +130,18 @@ dynamic_obs_mission:
     publish_hz: 10.0
     appear_frames: 2             # 아루코 연속 N프레임 → 즉시 정지 (15Hz 기준 ≈0.13s)
     clear_frames: 8              # 미검출 연속 N프레임 → 재출발 (≈0.53s, 깜빡임 조기출발 방지)
-    use_red_gate: false          # true: 빨간 구간(/is_red)에서만 정지 발동
+    use_red_gate: true           # 대회 규정 확정(2026-07-14): 동적 장애물은 빨간 구간에서만
+                                 # → 다른 구간 오정지 차단. red HSV 는 현장 실측 확정값 사용 중
 
 roundabout_mission:
   ros__parameters:
     enabled: true               # ⚠️ 현장에서 entry/loop/exit 튜닝 후 true
     publish_hz: 30.0            # EXIT 이 lane_angle+bias 를 자기 주기로 발행 → 탈출 조향 반응성 위해 30 유지
     entry_min_sec: 0.0           # 출발 후 이 시간 전엔 진입 감시 안 함
-    entry_max_sec: 10000.0          # 도달 시 orange 무관 강제 진입 (시간 기반 fallback)
+    entry_max_sec: 6.0           # 강제 진입 백업 (회전교차로가 출발 직후라 6s — 실주행으로 출발→링 도달 시간 확인 후 조정)
     use_yellow_arm: true
-    yellow_arm_threshold: 1500   # /yellow_pixels 진입 임계 (실측! — 회전교차로 노란 링)
+    yellow_arm_threshold: 1000   # /yellow_pixels(BGR 노랑 카운트) 진입 임계 — bag 실측(2026-07-14):
+                                 # 흰선 구간 0 / 링 접근 중앙값 2633 → 1000 이면 접근 초입에 확실히 발동
     loop_done_mode: both         # 'time' | 'steer' | 'both'
     loop_sec: 30.0                # 1회전 소요 시간 (실측!)
     steer_integral_target: 30.0   # |조향%| 적분 목표 (실측! /roundabout/steer_integral 관찰)
@@ -117,7 +157,9 @@ main_planner:
   ros__parameters:
     control_topic: /control
     loop_hz: 30.0
-    steering_gain: 0.0029      # 픽셀 오차(±320) -> steering percent(±1) 변환
+    steering_gain: 0.0035      # 픽셀 오차(±320) -> steering percent(±1) 변환
+                               # 0.0040 은 과조향 체감(2026-07-15) → 0.0035 중간값.
+                               # 커브 P 정상상태 오차: 0.0030=117px / 0.0035=100px / 0.0040=87px
     invert_steering: false
     throttle_gain: 1.0        # speed(0.2~0.5) -> throttle percent
     max_throttle: 0.6
@@ -131,7 +173,7 @@ control_node:
     pca9685_addr: 0x40
     steering_channel: 0
     throttle_channel: 1
-    steer_trim: 0.12          # 직진 보정 (2026-07-08 topic pub 테스트로 실측 — steering 0.12 에서 직진)
+    steer_trim: -0.007          # 직진 보정 (2026-07-08 topic pub 테스트로 실측 — steering 0.12 에서 직진)
     max_throttle: 0.6
     dry_run: false            # 하드웨어 없이 테스트 시 true
     manual_timeout: 0.4       # 조종기 입력 우선권 유지 시간 (초)

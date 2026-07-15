@@ -60,6 +60,9 @@ PARAM_TABLE = [
     # -- STEP 0. 기초 (직진부터) --
     ('직진 트림',   '/control_node',        'steer_trim',       0.01,  -0.5,   0.5,   False, 'control_node'),
     ('주행 속도',   '/lane_detection_node', 'speed_safe',       0.01,   0.0,   0.5,   False, 'lane_detection_node'),
+    # -- STEP 0.5. 이진화 (adaptive threshold — 마스크가 선을 담는가) --
+    ('적응 블록',   '/lane_detection_node', 'adaptive_block',   10,     15,    201,   True,  'lane_detection_node'),
+    ('적응 C',      '/lane_detection_node', 'adaptive_c',       2,      -60,   10,    True,  'lane_detection_node'),
     # -- STEP 1. 추적 (윈도우 계단이 선을 무는가) --
     ('윈도우 폭',   '/lane_detection_node', 'sw_margin',        5,      20,    150,   True,  'lane_detection_node'),
     ('초기창 반폭', '/lane_detection_node', 'sw_win_half',      10,     60,    320,   True,  'lane_detection_node'),
